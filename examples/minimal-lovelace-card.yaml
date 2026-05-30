@@ -1,5 +1,5 @@
 type: entities
-title: Raritan PX4 Health
+title: LDCS Xerus Health
 show_header_toggle: false
 entities:
   - sensor.example_pdu_alarm_status

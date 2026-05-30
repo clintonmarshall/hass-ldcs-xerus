@@ -1,4 +1,4 @@
-"""Redfish outlet switches for Raritan PX4."""
+"""Redfish outlet switches for Xerus devices."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class RaritanOutletSwitch(CoordinatorEntity, SwitchEntity):
-    """A Raritan outlet controlled through Redfish."""
+    """A Xerus outlet controlled through Redfish."""
 
     _attr_has_entity_name = True
 

@@ -1,8 +1,8 @@
-# Legrand Xerus for Home Assistant
+# Legrand Data Center Solutions for Home Assistant
 
-Beta Home Assistant custom integration for Legrand/Raritan/Server Technology Xerus-based rack PDUs, built from a working PX4 proof of concept.
+Beta Home Assistant custom integration for Legrand Data Center Solutions products.
 
-The current integration domain is `raritan_px4` to preserve stable entity IDs for existing installs. The project name is broader because the roadmap includes Legrand data-center devices such as USystems RDHx cooling and Starline power monitoring.
+The integration domain is `ldcs`. Xerus-based rack PDUs are the first supported platform because they provide a strong common base across Raritan, Server Technology, and related Legrand power products. The package is intentionally shaped as a broader LDCS integration so it can grow into USystems RDHx cooling, Starline power monitoring, Modbus devices, Redfish-capable products, MQTT datapush workflows, and other datacenter protocols without carrying an old product-specific identity.
 
 ## Current Capabilities
 
@@ -26,10 +26,10 @@ This is intended for HACS custom repository installation while it is in beta.
 2. Open the three-dot menu and choose **Custom repositories**.
 3. Add this repository URL.
 4. Choose category **Integration**.
-5. Install **Legrand Xerus / Raritan PX4**.
+5. Install **Legrand Data Center Solutions**.
 6. Restart Home Assistant.
 7. Go to **Settings -> Devices & services -> Add integration**.
-8. Search for **Raritan PX4** and add each device by IP address.
+8. Search for **Legrand Data Center Solutions** and add each Xerus device by IP address.
 
 See [docs/installation.md](docs/installation.md) for manual install and optional dashboard cards.
 
@@ -54,7 +54,7 @@ Copy them to `/config/www/` and register them as Lovelace resources using `/loca
 
 ## Status
 
-This is a beta/POC package. It is useful now for PX4/Xerus testing, but it is not yet a polished HACS default-store integration.
+This is a beta/POC package. It is useful now for Xerus-based PDU testing, but it is not yet a polished HACS default-store integration.
 
 Known beta edges:
 
@@ -65,11 +65,11 @@ Known beta edges:
 
 ## Project Direction
 
-Short term: make the PX4/Xerus integration solid and HACS-installable.
+Short term: make the Xerus PDU platform solid and HACS-installable.
 
 Medium term: add normalized rack/dashboard models for cooling, rack security, asset occupancy, and power quality.
 
-Long term: grow this into a broader Legrand data-center integration with protocol adapters for Xerus, RDHx Modbus, Starline, and related products.
+Long term: grow this into a broader Legrand Data Center Solutions integration with protocol adapters for Xerus, RDHx Modbus, Starline, and related products.
 
 See [docs/architecture.md](docs/architecture.md).
 

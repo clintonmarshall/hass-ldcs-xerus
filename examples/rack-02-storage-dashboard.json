@@ -2467,7 +2467,7 @@
               "cards": [
                 {
                   "type": "button",
-                  "entity": "button.raritan_px4_192_168_122_10_reset_sensor_minimum_and_maximum_values",
+                  "entity": "button.ldcs_192_168_122_10_reset_sensor_minimum_and_maximum_values",
                   "name": "Rack 02 PDU A reset min/max",
                   "icon": "mdi:restore-alert",
                   "show_state": false,
@@ -2477,7 +2477,7 @@
                 },
                 {
                   "type": "button",
-                  "entity": "button.raritan_px4_192_168_122_11_reset_sensor_minimum_and_maximum_values",
+                  "entity": "button.ldcs_192_168_122_11_reset_sensor_minimum_and_maximum_values",
                   "name": "Rack 02 PDU B reset min/max",
                   "icon": "mdi:restore-alert",
                   "show_state": false,
@@ -4088,7 +4088,7 @@
                     },
                     {
                       "type": "button",
-                      "entity": "button.raritan_px4_192_168_122_10_inlet_1_l1_capture_power_quality_waveform",
+                      "entity": "button.ldcs_192_168_122_10_inlet_1_l1_capture_power_quality_waveform",
                       "name": "Capture L1 waveform",
                       "icon": "mdi:sine-wave",
                       "show_state": false,
@@ -4103,7 +4103,7 @@
                     },
                     {
                       "type": "button",
-                      "entity": "button.raritan_px4_192_168_122_10_inlet_1_l2_capture_power_quality_waveform",
+                      "entity": "button.ldcs_192_168_122_10_inlet_1_l2_capture_power_quality_waveform",
                       "name": "Capture L2 waveform",
                       "icon": "mdi:sine-wave",
                       "show_state": false,
@@ -4118,7 +4118,7 @@
                     },
                     {
                       "type": "button",
-                      "entity": "button.raritan_px4_192_168_122_10_inlet_1_l3_capture_power_quality_waveform",
+                      "entity": "button.ldcs_192_168_122_10_inlet_1_l3_capture_power_quality_waveform",
                       "name": "Capture L3 waveform",
                       "icon": "mdi:sine-wave",
                       "show_state": false,
@@ -4164,7 +4164,7 @@
                     },
                     {
                       "type": "button",
-                      "entity": "button.raritan_px4_192_168_122_11_inlet_1_l1_capture_power_quality_waveform",
+                      "entity": "button.ldcs_192_168_122_11_inlet_1_l1_capture_power_quality_waveform",
                       "name": "Capture L1 waveform",
                       "icon": "mdi:sine-wave",
                       "show_state": false,
@@ -4179,7 +4179,7 @@
                     },
                     {
                       "type": "button",
-                      "entity": "button.raritan_px4_192_168_122_11_inlet_1_l2_capture_power_quality_waveform",
+                      "entity": "button.ldcs_192_168_122_11_inlet_1_l2_capture_power_quality_waveform",
                       "name": "Capture L2 waveform",
                       "icon": "mdi:sine-wave",
                       "show_state": false,
@@ -4194,7 +4194,7 @@
                     },
                     {
                       "type": "button",
-                      "entity": "button.raritan_px4_192_168_122_11_inlet_1_l3_capture_power_quality_waveform",
+                      "entity": "button.ldcs_192_168_122_11_inlet_1_l3_capture_power_quality_waveform",
                       "name": "Capture L3 waveform",
                       "icon": "mdi:sine-wave",
                       "show_state": false,

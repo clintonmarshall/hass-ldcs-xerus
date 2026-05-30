@@ -1,4 +1,4 @@
-"""Buttons for Raritan PX4 operations."""
+"""Buttons for Legrand Data Center Solutions operations."""
 
 from __future__ import annotations
 

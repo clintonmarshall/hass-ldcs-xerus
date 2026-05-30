@@ -21,6 +21,7 @@ except ImportError:
 
 from .prometheus import PrometheusCollector
 from .redfish import RedfishClient
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ class SensorDescriptor:
 
 
 class RaritanClient:
-    """Raritan Xerus JSON-RPC client."""
+    """Xerus JSON-RPC client backed by the official Raritan SDK."""
 
     def __init__(
         self,
@@ -235,10 +236,10 @@ class RaritanClient:
     def device_info(self):
         """Return Home Assistant device info."""
         serial = self._metadata.get("serial_number") or self.host
-        name = self._metadata.get("name") or self._metadata.get("model") or f"Raritan PX4 {self.host}"
+        name = self._metadata.get("name") or self._metadata.get("model") or f"Xerus device {self.host}"
         return {
-            "identifiers": {("raritan_px4", serial)},
-            "manufacturer": self._metadata.get("manufacturer") or "Raritan",
+            "identifiers": {(DOMAIN, serial)},
+            "manufacturer": self._metadata.get("manufacturer") or "Legrand",
             "model": self._metadata.get("model"),
             "name": name,
             "sw_version": self._metadata.get("fw_revision"),

@@ -20,12 +20,12 @@ PDU_NAMES = {
 
 
 def load_entities() -> list[dict]:
-    """Return enabled PX4 entities for Rack 02."""
+    """Return enabled LDCS entities for Rack 02."""
     registry = json.loads(REGISTRY_PATH.read_text())
     return [
         entity
         for entity in registry["data"]["entities"]
-        if entity.get("platform") == "raritan_px4"
+        if entity.get("platform") == "ldcs"
         and entity.get("config_entry_id") in PDU_NAMES
         and not entity.get("disabled_by")
     ]

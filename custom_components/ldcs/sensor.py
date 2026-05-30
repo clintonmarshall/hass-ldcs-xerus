@@ -1,4 +1,4 @@
-"""Sensors for Raritan PX4."""
+"""Sensors for Legrand Data Center Solutions devices."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ DEVICE_CLASS_MAP = {
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up Raritan PX4 sensors."""
+    """Set up LDCS sensors."""
     runtime = hass.data[DOMAIN][entry.entry_id]
     client = runtime["client"]
     coordinator = runtime["coordinator"]
@@ -80,7 +80,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class RaritanSensor(CoordinatorEntity, SensorEntity):
-    """Representation of a Raritan sensor."""
+    """Representation of a Xerus sensor."""
 
     _attr_has_entity_name = True
 

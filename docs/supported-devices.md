@@ -2,7 +2,7 @@
 
 ## Tested POC Scope
 
-- Raritan PX4 / Xerus virtual PDUs running firmware/API family `4.3.13`
+- Raritan PX4 and compatible Xerus virtual PDUs running firmware/API family `4.3.13`
 - Server Technology / Legrand Xerus-style telemetry exposed through compatible APIs
 - Redfish outlet switching where supported by the target device
 

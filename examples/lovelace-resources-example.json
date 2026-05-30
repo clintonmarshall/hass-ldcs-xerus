@@ -20,22 +20,22 @@
         "type": "module"
       },
       {
-        "id": "raritan_px4_waveform_card",
+        "id": "ldcs_waveform_card",
         "url": "/local/raritan-waveform-card.js?v=1",
         "type": "module"
       },
       {
-        "id": "raritan_px4_cooling_card",
+        "id": "ldcs_cooling_card",
         "url": "/local/raritan-cooling-card.js?v=1",
         "type": "module"
       },
       {
-        "id": "raritan_px4_rack_visual_card",
+        "id": "ldcs_rack_visual_card",
         "url": "/local/raritan-rack-visual-card.js?v=1",
         "type": "module"
       },
       {
-        "id": "raritan_px4_outlet_load_card",
+        "id": "ldcs_outlet_load_card",
         "url": "/local/raritan-outlet-load-card.js?v=1",
         "type": "module"
       }

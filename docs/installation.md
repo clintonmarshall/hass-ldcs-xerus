@@ -6,22 +6,22 @@
 2. Open **Custom repositories**.
 3. Paste the GitHub repository URL.
 4. Select category **Integration**.
-5. Install **Legrand Xerus / Raritan PX4**.
+5. Install **Legrand Data Center Solutions**.
 6. Restart Home Assistant.
-7. Add the integration from **Settings -> Devices & services -> Add integration -> Raritan PX4**.
+7. Add the integration from **Settings -> Devices & services -> Add integration -> Legrand Data Center Solutions**.
 
 ## Manual Installation
 
 Copy this folder:
 
 ```text
-custom_components/raritan_px4
+custom_components/ldcs
 ```
 
 to:
 
 ```text
-/config/custom_components/raritan_px4
+/config/custom_components/ldcs
 ```
 
 Restart Home Assistant and add the integration from the UI.

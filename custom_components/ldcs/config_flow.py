@@ -1,4 +1,4 @@
-"""Config flow for Raritan PX4."""
+"""Config flow for Legrand Data Center Solutions."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from .const import (
 from .raritan_client import RaritanClient, RaritanError
 
 
-class RaritanPx4ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Raritan PX4."""
+class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Legrand Data Center Solutions."""
 
     VERSION = 1
 
@@ -70,11 +70,11 @@ class RaritanPx4ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """Create the options flow."""
-        return RaritanPx4OptionsFlow(config_entry)
+        return LdcsOptionsFlow(config_entry)
 
 
-class RaritanPx4OptionsFlow(config_entries.OptionsFlow):
-    """Handle Raritan PX4 options."""
+class LdcsOptionsFlow(config_entries.OptionsFlow):
+    """Handle LDCS options."""
 
     def __init__(self, config_entry):
         """Initialize options flow."""

@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: "22"
       - name: Compile Python
-        run: python -m compileall -q custom_components/raritan_px4 tools
+        run: python -m compileall -q custom_components/ldcs tools
       - name: Check frontend cards
         run: |
           node --check www/raritan-waveform-card.js
@@ -26,5 +26,5 @@ jobs:
       - name: Validate JSON
         run: |
           python -m json.tool hacs.json > /dev/null
-          python -m json.tool custom_components/raritan_px4/manifest.json > /dev/null
-          python -m json.tool custom_components/raritan_px4/strings.json > /dev/null
+          python -m json.tool custom_components/ldcs/manifest.json > /dev/null
+          python -m json.tool custom_components/ldcs/strings.json > /dev/null

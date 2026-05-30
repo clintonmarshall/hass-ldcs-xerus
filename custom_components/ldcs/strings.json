@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "Add Xerus PDU",
-        "description": "Connect a Raritan, Server Technology, or compatible Legrand Xerus PDU.",
+        "title": "Add LDCS device",
+        "description": "Connect a Xerus-based Raritan, Server Technology, or compatible Legrand device.",
         "data": {
           "host": "Host",
           "username": "Username",
@@ -24,7 +24,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Xerus PDU options",
+        "title": "LDCS device options",
         "data": {
           "scan_interval": "Scan interval",
           "profile": "Discovery profile"

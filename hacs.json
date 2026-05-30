@@ -1,6 +1,6 @@
 {
-  "name": "Legrand Xerus / Raritan PX4",
-  "domains": ["raritan_px4"],
+  "name": "Legrand Data Center Solutions",
+  "domains": ["ldcs"],
   "homeassistant": "2025.1.0",
   "render_readme": true
 }

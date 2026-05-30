@@ -2,19 +2,19 @@
 
 Before publishing a GitHub release:
 
-1. Update `custom_components/raritan_px4/manifest.json` version.
+1. Update `custom_components/ldcs/manifest.json` version.
 2. Update README status and known limitations.
 3. Run local validation:
 
 ```bash
-python -m compileall -q custom_components/raritan_px4 tools
+python -m compileall -q custom_components/ldcs tools
 node --check www/raritan-waveform-card.js
 node --check www/raritan-cooling-card.js
 node --check www/raritan-rack-visual-card.js
 node --check www/raritan-outlet-load-card.js
 python -m json.tool hacs.json > /dev/null
-python -m json.tool custom_components/raritan_px4/manifest.json > /dev/null
-python -m json.tool custom_components/raritan_px4/strings.json > /dev/null
+python -m json.tool custom_components/ldcs/manifest.json > /dev/null
+python -m json.tool custom_components/ldcs/strings.json > /dev/null
 ```
 
 4. Install in a test Home Assistant instance via HACS custom repository.
@@ -29,6 +29,6 @@ python tools/package_release.py
 8. Tag the release:
 
 ```bash
-git tag v0.4.7
-git push origin v0.4.7
+git tag v0.5.0
+git push origin v0.5.0
 ```

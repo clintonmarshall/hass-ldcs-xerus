@@ -1,10 +1,17 @@
-# Legrand Data Center Home Assistant Integration
+# Legrand Data Center Solutions Home Assistant Integration
 
-## Recommendation
+## Direction
 
-Evolve the current `raritan_px4` prototype into a new `legrand_datacenter`
-custom integration. Keep protocol-specific clients behind a shared device model
-instead of adding Modbus handling directly to `RaritanClient`.
+This package is the first public shape of the Legrand Data Center Solutions
+Home Assistant integration. The Home Assistant domain is:
+
+```text
+ldcs
+```
+
+Xerus-based rack PDUs are the first supported platform. Future Legrand products
+should be added as platform adapters behind a shared rack/device model instead
+of turning the Xerus client into a catch-all implementation.
 
 The package should model a rack as a composition of products:
 
@@ -13,27 +20,17 @@ The package should model a rack as a composition of products:
 - Starline Critical Power Monitors and busway tap-off meters
 - Future Legrand products with a supported local protocol
 
-## Why Rename Now
+## Why Start With LDCS
 
-The current domain is product-specific:
-
-```text
-raritan_px4
-```
-
-The planned scope is a Legrand data-center system rather than one PDU family:
-
-```text
-legrand_datacenter
-```
-
-Renaming early avoids publishing a broad integration with PX4 terminology baked
-into entity IDs, MQTT topics, diagnostics, documentation, and config flows.
+There are no public installs to preserve, so the first GitHub release should
+use the broader LDCS identity from the beginning. That avoids publishing a
+product-specific domain, entity namespace, config flow, and HACS package name
+that would later need migration.
 
 ## Proposed Structure
 
 ```text
-custom_components/legrand_datacenter/
+custom_components/ldcs/
   __init__.py
   config_flow.py
   coordinator.py
@@ -51,6 +48,7 @@ custom_components/legrand_datacenter/
     xerus.py
     xerus_prometheus.py
     xerus_redfish.py
+    xerus_mqtt.py
     usystems_modbus.py
     starline_modbus.py
   profiles/
@@ -167,16 +165,15 @@ Add devices through the UI:
 Connection fields belong in `ConfigEntry.data`. Rack placement, scan interval,
 discovery profile, and opt-in controls belong in `ConfigEntry.options`.
 
-## Migration
+## Implementation Path
 
-1. Freeze `raritan_px4` feature development after the current phase support.
-2. Scaffold `legrand_datacenter` with the shared model and Xerus adapter.
-3. Add entity-registry migration for existing PX4 entity IDs where possible.
-4. Add the USystems RDHx profile from the validated YAML register map.
-5. Run the new RDHx adapter read-only beside the YAML configuration.
-6. Compare values and alarms, then remove the YAML Modbus include.
-7. Add Starline CPM once its model and register map are available.
-8. Generate rack dashboards from normalized topology rather than product names.
+1. Publish the current Xerus PDU support under the `ldcs` integration domain.
+2. Refactor the Xerus client into an adapter behind a shared device snapshot.
+3. Add the USystems RDHx profile from the validated YAML register map.
+4. Run the new RDHx adapter read-only beside the YAML configuration.
+5. Compare values and alarms, then remove the YAML Modbus include.
+6. Add Starline CPM once its model and register map are available.
+7. Generate rack dashboards from normalized topology rather than product names.
 
 ## Existing USystems Prototype
 
@@ -191,4 +188,3 @@ The current YAML prototype already covers:
 The next implementation should preserve these entity names during migration
 where practical, while grouping them under a USystems RDHx Home Assistant
 device.
-

@@ -8,8 +8,8 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPONENT = ROOT / "custom_components" / "raritan_px4"
-OUTPUT = ROOT / "dist" / "raritan_px4_custom_component.zip"
+COMPONENT = ROOT / "custom_components" / "ldcs"
+OUTPUT = ROOT / "dist" / "ldcs_custom_component.zip"
 
 
 def main() -> None:

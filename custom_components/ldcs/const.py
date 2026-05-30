@@ -1,6 +1,6 @@
-"""Constants for the Raritan PX4 integration."""
+"""Constants for the Legrand Data Center Solutions integration."""
 
-DOMAIN = "raritan_px4"
+DOMAIN = "ldcs"
 
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_PROFILE = "profile"

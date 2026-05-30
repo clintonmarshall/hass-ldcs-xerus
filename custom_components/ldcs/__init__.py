@@ -1,4 +1,4 @@
-"""Raritan PX4/Xerus JSON-RPC integration for Home Assistant."""
+"""Legrand Data Center Solutions integration for Home Assistant."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ MQTT_FLEET_TOPIC = "raritan/#"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a Raritan PX4 device from a config entry."""
+    """Set up an LDCS device from a config entry."""
     client = RaritanClient(
         host=entry.data[CONF_HOST],
         username=entry.data[CONF_USERNAME],
@@ -106,7 +106,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a Raritan PX4 config entry."""
+    """Unload an LDCS config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         runtime = hass.data[DOMAIN].pop(entry.entry_id, {})
