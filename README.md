@@ -1,0 +1,80 @@
+# Legrand Xerus for Home Assistant
+
+Beta Home Assistant custom integration for Legrand/Raritan/Server Technology Xerus-based rack PDUs, built from a working PX4 proof of concept.
+
+The current integration domain is `raritan_px4` to preserve stable entity IDs for existing installs. The project name is broader because the roadmap includes Legrand data-center devices such as USystems RDHx cooling and Starline power monitoring.
+
+## Current Capabilities
+
+- UI-based setup: host/IP, username, password, SSL verification, scan interval, and discovery profile.
+- Xerus JSON-RPC discovery using the official `raritan` Python SDK.
+- Prometheus-backed telemetry polling where available, with JSON-RPC fallback.
+- MQTT datapush wake-up support for faster refresh after Xerus events.
+- Redfish outlet switching where supported by the PDU.
+- Numeric sensors with PDU-maintained min/max readings and timestamps.
+- Button to reset all numeric sensor minimum/maximum values on a PDU.
+- Alarm summary sensors from Xerus alerted sensor and alarm managers.
+- Rack security diagnostics from door, handle, lock, and smartlock/rule polling where exposed.
+- Power-quality waveform capture and local Lovelace waveform visualization.
+- Asset strip inventory diagnostics where the Xerus asset strip interface is exposed.
+
+## Installation With HACS
+
+This is intended for HACS custom repository installation while it is in beta.
+
+1. In Home Assistant, open HACS.
+2. Open the three-dot menu and choose **Custom repositories**.
+3. Add this repository URL.
+4. Choose category **Integration**.
+5. Install **Legrand Xerus / Raritan PX4**.
+6. Restart Home Assistant.
+7. Go to **Settings -> Devices & services -> Add integration**.
+8. Search for **Raritan PX4** and add each device by IP address.
+
+See [docs/installation.md](docs/installation.md) for manual install and optional dashboard cards.
+
+## Discovery Profiles
+
+- `basic`: recommended for fleets. Inlet summary, outlet active power/state, environmental sensors, OCP state, asset/alarm/security summaries.
+- `power`: broader electrical telemetry without the heaviest pole-level detail.
+- `full`: all discovered sensors. Useful for exploration, but can create many entities.
+
+For large fleets, start with `basic`.
+
+## Optional Lovelace Cards
+
+This repo includes optional local cards in [`www/`](www/):
+
+- `raritan-waveform-card.js`
+- `raritan-cooling-card.js`
+- `raritan-rack-visual-card.js`
+- `raritan-outlet-load-card.js`
+
+Copy them to `/config/www/` and register them as Lovelace resources using `/local/<file>.js`.
+
+## Status
+
+This is a beta/POC package. It is useful now for PX4/Xerus testing, but it is not yet a polished HACS default-store integration.
+
+Known beta edges:
+
+- Dashboard examples are environment-specific and should be treated as patterns.
+- Smartlock event history varies by Xerus model/firmware; door and lock state transitions are tracked by polling.
+- Optional frontend cards are manually installed for now.
+- USystems RDHx and Starline support are currently roadmap items, not native integration setup flows.
+
+## Project Direction
+
+Short term: make the PX4/Xerus integration solid and HACS-installable.
+
+Medium term: add normalized rack/dashboard models for cooling, rack security, asset occupancy, and power quality.
+
+Long term: grow this into a broader Legrand data-center integration with protocol adapters for Xerus, RDHx Modbus, Starline, and related products.
+
+See [docs/architecture.md](docs/architecture.md).
+
+New to publishing on GitHub? See [docs/github-publishing.md](docs/github-publishing.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

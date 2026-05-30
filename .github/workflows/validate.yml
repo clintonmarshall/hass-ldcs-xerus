@@ -1,0 +1,30 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Compile Python
+        run: python -m compileall -q custom_components/raritan_px4 tools
+      - name: Check frontend cards
+        run: |
+          node --check www/raritan-waveform-card.js
+          node --check www/raritan-cooling-card.js
+          node --check www/raritan-rack-visual-card.js
+          node --check www/raritan-outlet-load-card.js
+      - name: Validate JSON
+        run: |
+          python -m json.tool hacs.json > /dev/null
+          python -m json.tool custom_components/raritan_px4/manifest.json > /dev/null
+          python -m json.tool custom_components/raritan_px4/strings.json > /dev/null

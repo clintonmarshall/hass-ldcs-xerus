@@ -1,0 +1,8 @@
+type: entities
+title: Raritan PX4 Health
+show_header_toggle: false
+entities:
+  - sensor.example_pdu_alarm_status
+  - sensor.example_pdu_active_breach_count
+  - sensor.example_pdu_rack_security_status
+  - button.example_pdu_reset_sensor_minimum_and_maximum_values

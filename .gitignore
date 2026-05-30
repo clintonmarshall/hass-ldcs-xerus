@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+dist/
+build/
+*.zip
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+known_hosts*
+*.local
+*.secret
+secrets.*

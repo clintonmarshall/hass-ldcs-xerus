@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Xerus PDU",
+        "description": "Connect a Raritan, Server Technology, or compatible Legrand Xerus PDU.",
+        "data": {
+          "host": "Host",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify SSL certificate",
+          "profile": "Discovery profile",
+          "scan_interval": "Scan interval"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the Xerus device"
+    },
+    "abort": {
+      "already_configured": "This Xerus device is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Xerus PDU options",
+        "data": {
+          "scan_interval": "Scan interval",
+          "profile": "Discovery profile"
+        }
+      }
+    }
+  }
+}

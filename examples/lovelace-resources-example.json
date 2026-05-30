@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace_resources",
+  "data": {
+    "items": [
+      {
+        "id": "669829af198a40d0857487198a8630be",
+        "url": "/hacsfiles/lovelace-mushroom/mushroom.js?hacstag=444350375511",
+        "type": "module"
+      },
+      {
+        "id": "209d4701fccc4c94945f2f7830928f55",
+        "url": "/hacsfiles/Bubble-Card/bubble-card.js?hacstag=680112919322",
+        "type": "module"
+      },
+      {
+        "id": "311c471abefc4abaa11c4d66f6b4f8b5",
+        "url": "/hacsfiles/mini-graph-card/mini-graph-card-bundle.js?hacstag=1512800620130",
+        "type": "module"
+      },
+      {
+        "id": "raritan_px4_waveform_card",
+        "url": "/local/raritan-waveform-card.js?v=1",
+        "type": "module"
+      },
+      {
+        "id": "raritan_px4_cooling_card",
+        "url": "/local/raritan-cooling-card.js?v=1",
+        "type": "module"
+      },
+      {
+        "id": "raritan_px4_rack_visual_card",
+        "url": "/local/raritan-rack-visual-card.js?v=1",
+        "type": "module"
+      },
+      {
+        "id": "raritan_px4_outlet_load_card",
+        "url": "/local/raritan-outlet-load-card.js?v=1",
+        "type": "module"
+      }
+    ]
+  }
+}
