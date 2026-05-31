@@ -2,12 +2,32 @@
 
 ## Fields
 
+### Product Selection
+
+- `product_type`: what you are adding: Xerus rack PDU, USystems RDHx cooling, or rack/dashboard only.
+
+### Xerus Rack PDU
+
 - `host`: IP address or DNS name of the Xerus device.
 - `username`: Xerus account username.
 - `password`: Xerus account password.
 - `verify_ssl`: enable only if the device has a certificate trusted by Home Assistant.
 - `profile`: discovery breadth.
 - `scan_interval`: polling interval in seconds.
+
+### USystems RDHx Cooling
+
+- `host`: IP address or DNS name of the RDHx controller.
+- `modbus_port`: Modbus TCP port, usually `502`.
+- `modbus_slave_id`: Modbus slave ID.
+- `scan_interval`: polling interval in seconds. Native Modbus telemetry is planned as the next adapter.
+
+### Rack Metadata
+
+- `rack_name`: rack or containment name.
+- `rack_role`: device role within the rack, such as left PDU rail, right PDU rail, or cooling.
+- `rack_position`: free-form rack position notes.
+- `create_dashboard`: store dashboard generation intent with the config entry.
 
 ## Profiles
 

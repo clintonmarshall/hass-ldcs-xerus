@@ -9,6 +9,10 @@
 5. Install **Legrand Data Center Solutions**.
 6. Restart Home Assistant.
 7. Add the integration from **Settings -> Devices & services -> Add integration -> Legrand Data Center Solutions**.
+8. Choose what you are adding:
+   - **Xerus rack PDU** for Raritan, Server Technology, or compatible Xerus PDUs.
+   - **USystems RDHx cooling** to register a cooling device for the LDCS rack model. Native Modbus telemetry is planned next.
+   - **Rack/dashboard only** to create a rack planning entry before all devices are connected.
 
 ## Manual Installation
 
@@ -59,3 +63,11 @@ scan_interval: 30
 ```
 
 After the device is added, Home Assistant will create sensors, switches, buttons, and diagnostics based on what the device exposes.
+
+## Rack Metadata and Dashboards
+
+The setup flow asks for rack name, rack role, rack position, and whether the
+integration should create or update a rack dashboard. The current release stores
+that dashboard intent with the config entry; the generic dashboard generator is
+the next production step. The Rack 02 example dashboard remains available as a
+working pattern in `examples/`.

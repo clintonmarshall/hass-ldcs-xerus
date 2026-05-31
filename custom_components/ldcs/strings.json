@@ -2,15 +2,48 @@
   "config": {
     "step": {
       "user": {
-        "title": "Add LDCS device",
-        "description": "Connect a Xerus-based Raritan, Server Technology, or compatible Legrand device.",
+        "title": "What would you like to add?",
+        "description": "Choose the LDCS product or rack workflow to configure.",
+        "data": {
+          "product_type": "Product or workflow"
+        }
+      },
+      "xerus_pdu": {
+        "title": "Add Xerus rack PDU",
+        "description": "Connect a Raritan, Server Technology, or compatible Legrand Xerus PDU.",
         "data": {
           "host": "Host",
           "username": "Username",
           "password": "Password",
           "verify_ssl": "Verify SSL certificate",
           "profile": "Discovery profile",
-          "scan_interval": "Scan interval"
+          "scan_interval": "Scan interval",
+          "rack_name": "Rack name",
+          "rack_role": "Rack role",
+          "rack_position": "Rack position",
+          "create_dashboard": "Create or update a rack dashboard"
+        }
+      },
+      "usystems_rdhx": {
+        "title": "Add USystems RDHx cooling",
+        "description": "Register a USystems RDHx cooling device for the LDCS rack model. Native Modbus telemetry will be added as the next adapter.",
+        "data": {
+          "host": "Host",
+          "modbus_port": "Modbus TCP port",
+          "modbus_slave_id": "Modbus slave ID",
+          "scan_interval": "Scan interval",
+          "rack_name": "Rack name",
+          "rack_role": "Rack role",
+          "rack_position": "Rack position",
+          "create_dashboard": "Create or update a rack dashboard"
+        }
+      },
+      "rack_dashboard": {
+        "title": "Create rack/dashboard entry",
+        "description": "Create an LDCS rack entry for dashboard planning. This does not connect to a physical device.",
+        "data": {
+          "rack_name": "Rack name",
+          "rack_position": "Rack location or notes"
         }
       }
     },
@@ -27,7 +60,8 @@
         "title": "LDCS device options",
         "data": {
           "scan_interval": "Scan interval",
-          "profile": "Discovery profile"
+          "profile": "Discovery profile",
+          "create_dashboard": "Create or update a rack dashboard"
         }
       }
     }

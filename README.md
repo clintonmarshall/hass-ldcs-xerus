@@ -6,7 +6,8 @@ The integration domain is `ldcs`. Xerus-based rack PDUs are the first supported 
 
 ## Current Capabilities
 
-- UI-based setup: host/IP, username, password, SSL verification, scan interval, and discovery profile.
+- Guided UI setup for Xerus rack PDUs, USystems RDHx cooling placeholders, and rack/dashboard entries.
+- Rack metadata capture: rack name, rack role, rack position, and dashboard intent.
 - Xerus JSON-RPC discovery using the official `raritan` Python SDK.
 - Prometheus-backed telemetry polling where available, with JSON-RPC fallback.
 - MQTT datapush wake-up support for faster refresh after Xerus events.
@@ -29,7 +30,8 @@ This is intended for HACS custom repository installation while it is in beta.
 5. Install **Legrand Data Center Solutions**.
 6. Restart Home Assistant.
 7. Go to **Settings -> Devices & services -> Add integration**.
-8. Search for **Legrand Data Center Solutions** and add each Xerus device by IP address.
+8. Search for **Legrand Data Center Solutions**.
+9. Choose **Xerus rack PDU**, **USystems RDHx cooling**, or **Rack/dashboard only**.
 
 See [docs/installation.md](docs/installation.md) for manual install and optional dashboard cards.
 
@@ -61,7 +63,8 @@ Known beta edges:
 - Dashboard examples are environment-specific and should be treated as patterns.
 - Smartlock event history varies by Xerus model/firmware; door and lock state transitions are tracked by polling.
 - Optional frontend cards are manually installed for now.
-- USystems RDHx and Starline support are currently roadmap items, not native integration setup flows.
+- USystems RDHx can be registered in the setup flow, but native Modbus telemetry is still a roadmap adapter.
+- Starline support is currently a roadmap item, not a native integration setup flow.
 
 ## Project Direction
 

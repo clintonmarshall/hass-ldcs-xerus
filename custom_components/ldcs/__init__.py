@@ -9,17 +9,25 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.components import mqtt
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
     CONF_PROFILE,
+    CONF_PRODUCT_TYPE,
+    CONF_RACK_NAME,
+    CONF_RACK_POSITION,
+    CONF_RACK_ROLE,
     CONF_VERIFY_SSL,
     DEFAULT_PROFILE,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MQTT_REFRESH_DEBOUNCE,
     PLATFORMS,
+    PRODUCT_RACK_DASHBOARD,
+    PRODUCT_USYSTEMS_RDHX,
+    PRODUCT_XERUS_PDU,
 )
 from .raritan_client import RaritanClient, RaritanError
 
@@ -29,6 +37,11 @@ MQTT_FLEET_TOPIC = "raritan/#"
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up an LDCS device from a config entry."""
+    product_type = entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_XERUS_PDU)
+    if product_type != PRODUCT_XERUS_PDU:
+        await _async_setup_metadata_entry(hass, entry, product_type)
+        return True
+
     client = RaritanClient(
         host=entry.data[CONF_HOST],
         username=entry.data[CONF_USERNAME],
@@ -107,6 +120,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload an LDCS config entry."""
+    product_type = entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_XERUS_PDU)
+    if product_type != PRODUCT_XERUS_PDU:
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        return True
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         runtime = hass.data[DOMAIN].pop(entry.entry_id, {})
@@ -120,6 +138,42 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if cancel_refresh := hass.data.pop(f"{DOMAIN}_mqtt_cancel_refresh", None):
                 cancel_refresh()
     return unload_ok
+
+
+async def _async_setup_metadata_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    product_type: str,
+) -> None:
+    """Register non-Xerus LDCS entries until their native adapters are enabled."""
+    rack_name = entry.data.get(CONF_RACK_NAME)
+    rack_position = entry.data.get(CONF_RACK_POSITION)
+    rack_role = entry.data.get(CONF_RACK_ROLE)
+    device_registry = dr.async_get(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.unique_id or entry.entry_id)},
+        manufacturer="Legrand",
+        name=entry.title,
+        model=_model_name(product_type),
+        configuration_url=f"http://{entry.data[CONF_HOST]}" if CONF_HOST in entry.data else None,
+        suggested_area=rack_name,
+    )
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "product_type": product_type,
+        "rack_name": rack_name,
+        "rack_position": rack_position,
+        "rack_role": rack_role,
+    }
+
+
+def _model_name(product_type: str) -> str:
+    """Return a user-facing model label for an LDCS product type."""
+    if product_type == PRODUCT_USYSTEMS_RDHX:
+        return "USystems RDHx"
+    if product_type == PRODUCT_RACK_DASHBOARD:
+        return "Rack dashboard"
+    return "LDCS device"
 
 
 async def _async_setup_fleet_mqtt(hass: HomeAssistant) -> None:

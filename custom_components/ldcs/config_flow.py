@@ -7,15 +7,30 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 
 from .const import (
+    CONF_CREATE_DASHBOARD,
+    CONF_MODBUS_PORT,
+    CONF_MODBUS_SLAVE_ID,
     CONF_PROFILE,
+    CONF_PRODUCT_TYPE,
+    CONF_RACK_NAME,
+    CONF_RACK_POSITION,
+    CONF_RACK_ROLE,
     CONF_VERIFY_SSL,
+    DEFAULT_CREATE_DASHBOARD,
+    DEFAULT_MODBUS_PORT,
+    DEFAULT_MODBUS_SLAVE_ID,
     DEFAULT_PROFILE,
+    DEFAULT_PRODUCT_TYPE,
+    DEFAULT_RACK_NAME,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
-    PROFILES,
+    PRODUCT_RACK_DASHBOARD,
+    PRODUCT_USYSTEMS_RDHX,
+    PRODUCT_XERUS_PDU,
 )
 from .raritan_client import RaritanClient, RaritanError
 
@@ -27,6 +42,23 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
+        if user_input is not None:
+            product_type = user_input[CONF_PRODUCT_TYPE]
+            if product_type == PRODUCT_XERUS_PDU:
+                return await self.async_step_xerus_pdu()
+            if product_type == PRODUCT_USYSTEMS_RDHX:
+                return await self.async_step_usystems_rdhx()
+            return await self.async_step_rack_dashboard()
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PRODUCT_TYPE, default=DEFAULT_PRODUCT_TYPE): _product_selector(),
+            }
+        )
+        return self.async_show_form(step_id="user", data_schema=schema)
+
+    async def async_step_xerus_pdu(self, user_input=None):
+        """Add a Xerus-based rack PDU."""
         errors = {}
 
         if user_input is not None:
@@ -46,6 +78,7 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(serial)
                 self._abort_if_unique_id_configured()
                 title = metadata.get("name") or metadata.get("model") or user_input[CONF_HOST]
+                user_input[CONF_PRODUCT_TYPE] = PRODUCT_XERUS_PDU
                 return self.async_create_entry(title=title, data=user_input)
 
         schema = vol.Schema(
@@ -54,17 +87,72 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_USERNAME, default="admin"): str,
                 vol.Required(CONF_PASSWORD): str,
                 vol.Required(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): bool,
-                vol.Required(CONF_PROFILE, default=DEFAULT_PROFILE): vol.In(PROFILES),
+                vol.Required(CONF_PROFILE, default=DEFAULT_PROFILE): _profile_selector(),
                 vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
                     vol.Coerce(int), vol.Range(min=5, max=3600)
                 ),
+                vol.Optional(CONF_RACK_NAME, default=DEFAULT_RACK_NAME): str,
+                vol.Optional(CONF_RACK_ROLE, default="left_pdu"): _rack_role_selector(),
+                vol.Optional(CONF_RACK_POSITION, default=""): str,
+                vol.Optional(CONF_CREATE_DASHBOARD, default=DEFAULT_CREATE_DASHBOARD): bool,
             }
         )
         return self.async_show_form(
-            step_id="user",
+            step_id="xerus_pdu",
             data_schema=schema,
             errors=errors,
         )
+
+    async def async_step_usystems_rdhx(self, user_input=None):
+        """Add a USystems RDHx cooling device placeholder."""
+        if user_input is not None:
+            unique_id = (
+                f"usystems_rdhx_{user_input[CONF_HOST]}_"
+                f"{user_input[CONF_MODBUS_PORT]}_{user_input[CONF_MODBUS_SLAVE_ID]}"
+            )
+            await self.async_set_unique_id(unique_id)
+            self._abort_if_unique_id_configured()
+            user_input[CONF_PRODUCT_TYPE] = PRODUCT_USYSTEMS_RDHX
+            title = f"USystems RDHx {user_input[CONF_HOST]}"
+            return self.async_create_entry(title=title, data=user_input)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_HOST): str,
+                vol.Optional(CONF_MODBUS_PORT, default=DEFAULT_MODBUS_PORT): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=65535)
+                ),
+                vol.Optional(CONF_MODBUS_SLAVE_ID, default=DEFAULT_MODBUS_SLAVE_ID): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=247)
+                ),
+                vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
+                    vol.Coerce(int), vol.Range(min=5, max=3600)
+                ),
+                vol.Optional(CONF_RACK_NAME, default=DEFAULT_RACK_NAME): str,
+                vol.Optional(CONF_RACK_ROLE, default="cooling"): _rack_role_selector(),
+                vol.Optional(CONF_RACK_POSITION, default="Rear door"): str,
+                vol.Optional(CONF_CREATE_DASHBOARD, default=DEFAULT_CREATE_DASHBOARD): bool,
+            }
+        )
+        return self.async_show_form(step_id="usystems_rdhx", data_schema=schema)
+
+    async def async_step_rack_dashboard(self, user_input=None):
+        """Create a rack/dashboard configuration entry."""
+        if user_input is not None:
+            rack_name = user_input[CONF_RACK_NAME]
+            await self.async_set_unique_id(f"rack_dashboard_{rack_name.lower().replace(' ', '_')}")
+            self._abort_if_unique_id_configured()
+            user_input[CONF_PRODUCT_TYPE] = PRODUCT_RACK_DASHBOARD
+            user_input[CONF_CREATE_DASHBOARD] = True
+            return self.async_create_entry(title=f"{rack_name} dashboard", data=user_input)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_RACK_NAME, default=DEFAULT_RACK_NAME): str,
+                vol.Optional(CONF_RACK_POSITION, default=""): str,
+            }
+        )
+        return self.async_show_form(step_id="rack_dashboard", data_schema=schema)
 
     @staticmethod
     @callback
@@ -85,20 +173,94 @@ class LdcsOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        product_type = self._config_entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_XERUS_PDU)
+        if product_type == PRODUCT_RACK_DASHBOARD:
+            schema = vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_CREATE_DASHBOARD,
+                        default=self._config_entry.options.get(
+                            CONF_CREATE_DASHBOARD,
+                            self._config_entry.data.get(CONF_CREATE_DASHBOARD, True),
+                        ),
+                    ): bool,
+                }
+            )
+            return self.async_show_form(step_id="init", data_schema=schema)
+
         scan_interval = self._config_entry.options.get(
             CONF_SCAN_INTERVAL,
             self._config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
         )
-        profile = self._config_entry.options.get(
-            CONF_PROFILE,
-            self._config_entry.data.get(CONF_PROFILE, DEFAULT_PROFILE),
-        )
-        schema = vol.Schema(
-            {
-                vol.Optional(CONF_PROFILE, default=profile): vol.In(PROFILES),
-                vol.Optional(CONF_SCAN_INTERVAL, default=scan_interval): vol.All(
-                    vol.Coerce(int), vol.Range(min=5, max=3600)
-                )
+        fields = {
+            vol.Optional(CONF_SCAN_INTERVAL, default=scan_interval): vol.All(
+                vol.Coerce(int), vol.Range(min=5, max=3600)
+            ),
+            vol.Optional(
+                CONF_CREATE_DASHBOARD,
+                default=self._config_entry.options.get(
+                    CONF_CREATE_DASHBOARD,
+                    self._config_entry.data.get(CONF_CREATE_DASHBOARD, DEFAULT_CREATE_DASHBOARD),
+                ),
+            ): bool,
+        }
+        if product_type == PRODUCT_XERUS_PDU:
+            profile = self._config_entry.options.get(
+                CONF_PROFILE,
+                self._config_entry.data.get(CONF_PROFILE, DEFAULT_PROFILE),
+            )
+            fields = {
+                vol.Optional(CONF_PROFILE, default=profile): _profile_selector(),
+                **fields,
             }
-        )
+        schema = vol.Schema(fields)
         return self.async_show_form(step_id="init", data_schema=schema)
+
+
+def _select(options: list[tuple[str, str]]) -> selector.SelectSelector:
+    """Build a labelled dropdown selector."""
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[
+                {"value": value, "label": label}
+                for value, label in options
+            ],
+            mode="dropdown",
+        )
+    )
+
+
+def _product_selector() -> selector.SelectSelector:
+    """Return the LDCS product selector."""
+    return _select(
+        [
+            (PRODUCT_XERUS_PDU, "Xerus rack PDU"),
+            (PRODUCT_USYSTEMS_RDHX, "USystems RDHx cooling"),
+            (PRODUCT_RACK_DASHBOARD, "Rack/dashboard only"),
+        ]
+    )
+
+
+def _profile_selector() -> selector.SelectSelector:
+    """Return the Xerus discovery profile selector."""
+    return _select(
+        [
+            ("basic", "Basic - recommended for fleets"),
+            ("power", "Power - broader electrical telemetry"),
+            ("full", "Full - all discovered sensors"),
+        ]
+    )
+
+
+def _rack_role_selector() -> selector.SelectSelector:
+    """Return the rack role selector."""
+    return _select(
+        [
+            ("left_pdu", "Left PDU rail"),
+            ("right_pdu", "Right PDU rail"),
+            ("cooling", "Cooling"),
+            ("busway", "Busway or tap-off"),
+            ("sensor_strip", "Sensor or asset strip"),
+            ("rack", "Rack-level device"),
+        ]
+    )
