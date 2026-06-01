@@ -239,8 +239,8 @@ class RaritanClient:
         self._security_interfaces = {}
         self._security_state_last = {}
         self._security_events = []
-        self._asset_strip = None
-        self._external_sensor_inventory = []
+        self._asset_strips = {}
+        self._external_sensor_inventory_by_pdu = {}
         self._outlet_state_devices_by_key = {}
         self._outlet_details = {}
         self._ocp_details = {}
@@ -316,7 +316,8 @@ class RaritanClient:
                 descriptors = []
                 self._sensors_by_key = {}
                 self._waveform_sources = {}
-                self._external_sensor_inventory = []
+                self._asset_strips = {}
+                self._external_sensor_inventory_by_pdu = {}
                 self._outlet_state_devices_by_key = {}
                 self._outlet_details = {}
                 self._ocp_details = {}
@@ -335,10 +336,7 @@ class RaritanClient:
                         },
                     )
                 self._collect_outlet_groups(descriptors)
-                self._collect_peripherals(descriptors)
-                self._collect_external_sensor_inventory(descriptors)
                 self._collect_asset_logger(descriptors)
-                self._collect_asset_inventory(descriptors)
                 self._collect_alarm_summary(descriptors)
                 self._collect_security_summary(descriptors)
                 self.sensor_descriptors = descriptors
@@ -479,9 +477,8 @@ class RaritanClient:
                     }
 
         if asset_inventory_descriptors:
-            asset_inventory = self._asset_inventory_value()
             for descriptor in asset_inventory_descriptors:
-                data[descriptor.key] = asset_inventory
+                data[descriptor.key] = self._asset_inventory_value(descriptor)
 
         if alarm_descriptors:
             data.update(self._read_alarm_summary(alarm_descriptors))
@@ -706,6 +703,9 @@ class RaritanClient:
                 device_info,
                 pdu_attributes,
             )
+        self._collect_peripherals(descriptors, pdu, pdu_id, device_info, pdu_attributes)
+        self._collect_external_sensor_inventory(descriptors, pdu_id, device_info, pdu_attributes)
+        self._collect_asset_inventory(descriptors, pdu_id, device_info, pdu_attributes)
 
     def _collect_outlet_groups(self, descriptors):
         """Collect sensors for Xerus outlet groups."""
@@ -789,14 +789,15 @@ class RaritanClient:
                 pole_attributes = {**(attributes or {}), "power_line": line_name}
                 self._collect_from_struct(descriptors, pole_context, pole, pole_attributes, None, device_info)
 
-    def _collect_peripherals(self, descriptors):
+    def _collect_peripherals(self, descriptors, pdu, pdu_id=0, device_info=None, base_attributes=None):
         try:
-            manager = self.pdu.getPeripheralDeviceManager()
+            manager = pdu.getPeripheralDeviceManager()
             slots = manager.getDeviceSlots()
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Unable to read peripheral device slots on %s: %s", self.host, err)
             return
 
+        inventory = []
         for index, slot in enumerate(slots, start=1):
             try:
                 settings = slot.getSettings()
@@ -809,8 +810,9 @@ class RaritanClient:
                 type_name, unit_name = _sensor_type_names(device.device)
                 sensor_name = settings.name or f"External Sensor {index}"
                 sensor_description = getattr(settings, "description", "")
-                self._external_sensor_inventory.append(
+                inventory.append(
                     {
+                        "pdu_id": pdu_id,
                         "slot": index,
                         "name": sensor_name,
                         "configured_name": settings.name,
@@ -826,27 +828,32 @@ class RaritanClient:
                     "sensor",
                     device.device,
                     {
+                        **(base_attributes or {}),
                         "sensor_name": settings.name,
                         "sensor_configured_name": settings.name,
                         "sensor_description": sensor_description,
                         "sensor_slot": index,
                         "sensor_type": type_name,
                     },
+                    device_info=device_info,
                 )
+        self._external_sensor_inventory_by_pdu[pdu_id] = inventory
 
-    def _collect_external_sensor_inventory(self, descriptors):
+    def _collect_external_sensor_inventory(self, descriptors, pdu_id=0, device_info=None, attributes=None):
         """Add a summary entity for attached external sensors."""
+        suffix = "" if pdu_id in (0, 1) else f"_pdu_{pdu_id}"
         descriptors.append(
             SensorDescriptor(
-                key=_slug(f"{self.host}_external_sensor_inventory"),
+                key=_slug(f"{self.host}{suffix}_external_sensor_inventory"),
                 name="External Sensor Inventory",
                 context="External sensors",
-                target="/model/peripheraldevicemanager",
+                target=f"/model/pdu/{pdu_id}/peripheraldevicemanager",
                 kind=SensorKind.INVENTORY,
                 field="external_sensor_inventory",
                 type_name="INVENTORY",
                 asset_field="external_sensor_inventory",
-                device_info=self.device_info,
+                attributes={"pdu_id": pdu_id, **(attributes or {})},
+                device_info=device_info or self.device_info,
             )
         )
 
@@ -877,31 +884,41 @@ class RaritanClient:
                 )
             )
 
-    def _collect_asset_inventory(self, descriptors):
+    def _collect_asset_inventory(self, descriptors, pdu_id=0, device_info=None, attributes=None):
         """Add the visual asset strip inventory entity."""
+        suffix = "" if pdu_id in (0, 1) else f"_pdu_{pdu_id}"
         descriptors.append(
             SensorDescriptor(
-                key=_slug(f"{self.host}_asset_strip_inventory"),
+                key=_slug(f"{self.host}{suffix}_asset_strip_inventory"),
                 name="Asset Strip Inventory",
                 context="Asset strip",
-                target="/model/assetstrip/0",
+                target=self._asset_strip_targets(pdu_id)[0],
                 kind=SensorKind.ASSET_INVENTORY,
                 field="asset_strip_inventory",
                 type_name="ASSET",
                 unit_name=None,
                 asset_field="asset_strip_inventory",
+                attributes={
+                    "pdu_id": pdu_id,
+                    "asset_strip_targets": self._asset_strip_targets(pdu_id),
+                    **(attributes or {}),
+                },
+                device_info=device_info or self.device_info,
             )
         )
 
-    def _asset_inventory_value(self):
+    def _asset_inventory_value(self, descriptor):
         """Return rack-unit asset tag occupancy when an asset strip is exposed."""
-        strip = self._asset_strip_interface()
+        attrs = descriptor.attributes or {}
+        pdu_id = attrs.get("pdu_id", 0)
+        strip = self._asset_strip_interface(pdu_id, attrs.get("asset_strip_targets"))
         if strip is None:
             return {
                 "available": True,
                 "value": 0,
                 "attributes": {
                     "asset_strip_status": "unsupported",
+                    "pdu_id": pdu_id,
                     "rack_unit_count": 42,
                     "asset_tags": [],
                     "telemetry_source": "json_rpc",
@@ -920,6 +937,7 @@ class RaritanClient:
             "value": len(asset_tags),
             "attributes": {
                 "asset_strip_status": state,
+                "pdu_id": pdu_id,
                 "rack_unit_count": rack_unit_count,
                 "asset_tags": asset_tags,
                 "main_tag_count": getattr(strip_info, "mainTagCount", None),
@@ -931,26 +949,41 @@ class RaritanClient:
             },
         }
 
-    def _asset_strip_interface(self):
+    def _asset_strip_interface(self, pdu_id=0, targets=None):
         """Return the first asset strip target that responds."""
-        if self._asset_strip is not None:
-            return self._asset_strip
-        for target in (
-            "/model/assetstrip/0",
-            "/model/assetstrip",
-            "/model/assetstrips/0",
-            "/model/assetstrip/1",
-            "/model/assetstrip/2",
-        ):
+        if pdu_id in self._asset_strips:
+            return self._asset_strips[pdu_id]
+        for target in targets or self._asset_strip_targets(pdu_id):
             try:
                 strip = assetmgrmodel.AssetStrip(target, self.agent)
                 strip.getState()
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("Unable to probe asset strip at %s on %s: %s", target, self.host, err)
                 continue
-            self._asset_strip = strip
+            self._asset_strips[pdu_id] = strip
             return strip
+        self._asset_strips[pdu_id] = None
         return None
+
+    def _asset_strip_targets(self, pdu_id=0):
+        """Return likely asset strip resource IDs for a primary or linked PDU."""
+        if pdu_id in (0, 1):
+            return (
+                "/model/assetstrip/0",
+                "/model/assetstrip",
+                "/model/assetstrips/0",
+                "/model/assetstrip/1",
+                "/model/assetstrip/2",
+            )
+        return (
+            f"/link/{pdu_id}/model/assetstrip/0",
+            f"/link/{pdu_id}/model/assetstrip",
+            f"/link/{pdu_id}/model/assetstrips/0",
+            f"/link/{pdu_id}/model/assetstrip/1",
+            f"/link/{pdu_id}/model/assetstrip/2",
+            f"/model/pdu/{pdu_id}/assetstrip/0",
+            f"/model/pdu/{pdu_id}/assetstrip",
+        )
 
     def _collect_alarm_summary(self, descriptors):
         """Add aggregate threshold and event-rule alarm entities."""
@@ -1403,17 +1436,20 @@ class RaritanClient:
         data = {}
         for descriptor in descriptors:
             if descriptor.asset_field == "external_sensor_inventory":
+                pdu_id = (descriptor.attributes or {}).get("pdu_id", 0)
+                inventory = self._external_sensor_inventory_by_pdu.get(pdu_id, [])
                 sensors_by_type = {}
-                for sensor in self._external_sensor_inventory:
+                for sensor in inventory:
                     sensor_type = sensor.get("type") or "UNKNOWN"
                     sensors_by_type[sensor_type] = sensors_by_type.get(sensor_type, 0) + 1
                 data[descriptor.key] = {
                     "available": True,
-                    "value": len(self._external_sensor_inventory),
+                    "value": len(inventory),
                     "attributes": {
-                        "external_sensor_count": len(self._external_sensor_inventory),
+                        "pdu_id": pdu_id,
+                        "external_sensor_count": len(inventory),
                         "external_sensor_type_counts": sensors_by_type,
-                        "external_sensors": self._external_sensor_inventory,
+                        "external_sensors": inventory,
                         "telemetry_source": "json_rpc",
                     },
                 }
