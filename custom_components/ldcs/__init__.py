@@ -24,12 +24,14 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MQTT_REFRESH_DEBOUNCE,
-    PLATFORMS,
     PRODUCT_RACK_DASHBOARD,
     PRODUCT_USYSTEMS_RDHX,
     PRODUCT_XERUS_PDU,
+    USYSTEMS_RDHX_PLATFORMS,
+    XERUS_PLATFORMS,
 )
 from .raritan_client import RaritanClient, RaritanError
+from .usystems_rdhx import USystemsRdhxClient
 
 _LOGGER = logging.getLogger(__name__)
 MQTT_FLEET_TOPIC = "raritan/#"
@@ -38,6 +40,10 @@ MQTT_FLEET_TOPIC = "raritan/#"
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up an LDCS device from a config entry."""
     product_type = entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_XERUS_PDU)
+    if product_type == PRODUCT_USYSTEMS_RDHX:
+        await _async_setup_usystems_rdhx(hass, entry)
+        return True
+
     if product_type != PRODUCT_XERUS_PDU:
         await _async_setup_metadata_entry(hass, entry, product_type)
         return True
@@ -115,18 +121,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime["mqtt_cancel_refresh"] = _async_cancel_mqtt_refresh
     await _async_setup_fleet_mqtt(hass)
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, XERUS_PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload an LDCS config entry."""
     product_type = entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_XERUS_PDU)
+    if product_type == PRODUCT_USYSTEMS_RDHX:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, USYSTEMS_RDHX_PLATFORMS)
+        if unload_ok:
+            hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        return unload_ok
+
     if product_type != PRODUCT_XERUS_PDU:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         return True
 
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, XERUS_PLATFORMS)
     if unload_ok:
         runtime = hass.data[DOMAIN].pop(entry.entry_id, {})
         if unsubscribe := runtime.get("mqtt_unsubscribe"):
@@ -139,6 +151,34 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if cancel_refresh := hass.data.pop(f"{DOMAIN}_mqtt_cancel_refresh", None):
                 cancel_refresh()
     return unload_ok
+
+
+async def _async_setup_usystems_rdhx(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Set up a USystems RDHx Modbus device from a config entry."""
+    client = USystemsRdhxClient(entry.data)
+
+    async def _async_update_data():
+        return await hass.async_add_executor_job(client.update)
+
+    scan_interval = entry.options.get(
+        CONF_SCAN_INTERVAL,
+        entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+    )
+    coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name=f"{DOMAIN}_{entry.entry_id}",
+        update_method=_async_update_data,
+        update_interval=timedelta(seconds=scan_interval),
+    )
+    coordinator.async_set_updated_data({})
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "client": client,
+        "coordinator": coordinator,
+        "product_type": PRODUCT_USYSTEMS_RDHX,
+    }
+    await coordinator.async_config_entry_first_refresh()
+    await hass.config_entries.async_forward_entry_setups(entry, USYSTEMS_RDHX_PLATFORMS)
 
 
 async def _async_setup_metadata_entry(

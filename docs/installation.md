@@ -11,7 +11,7 @@
 7. Add the integration from **Settings -> Devices & services -> Add integration -> Legrand Data Center Solutions**.
 8. Choose what you are adding:
    - **Xerus rack PDU** for Raritan, Server Technology, or compatible Xerus PDUs.
-   - **USystems RDHx cooling** to register a cooling device for the LDCS rack model. Native Modbus telemetry is planned next.
+   - **USystems RDHx cooling** to add native Modbus telemetry using the IP address, port, and slave ID entered in the setup flow.
    - **Rack/dashboard only** to create a rack planning entry before all devices are connected.
 
 ## Manual Installation

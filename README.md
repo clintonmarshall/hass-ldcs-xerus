@@ -6,7 +6,7 @@ The integration domain is `ldcs`. Xerus-based rack PDUs are the first supported 
 
 ## Current Capabilities
 
-- Guided UI setup for Xerus rack PDUs, USystems RDHx cooling placeholders, and rack/dashboard entries.
+- Guided UI setup for Xerus rack PDUs, USystems RDHx cooling, and rack/dashboard entries.
 - Rack metadata capture: rack name, rack role, rack position, and dashboard intent.
 - Xerus JSON-RPC discovery using the official `raritan` Python SDK.
 - Prometheus-backed telemetry polling where available, with JSON-RPC fallback.
@@ -63,7 +63,7 @@ Known beta edges:
 - Dashboard examples are environment-specific and should be treated as patterns.
 - Smartlock event history varies by Xerus model/firmware; door and lock state transitions are tracked by polling.
 - Optional frontend cards are manually installed for now.
-- USystems RDHx can be registered in the setup flow, but native Modbus telemetry is still a roadmap adapter.
+- USystems RDHx native Modbus telemetry uses the host, port, and slave ID entered in the setup flow.
 - Starline support is currently a roadmap item, not a native integration setup flow.
 
 ## Project Direction

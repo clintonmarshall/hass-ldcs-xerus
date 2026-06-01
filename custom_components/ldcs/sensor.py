@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .raritan_client import SensorKind
+from .usystems_rdhx import RDHX_SENSORS
 
 
 UNIT_MAP = {
@@ -62,6 +63,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
     runtime = hass.data[DOMAIN][entry.entry_id]
     client = runtime["client"]
     coordinator = runtime["coordinator"]
+    if runtime.get("product_type") == "usystems_rdhx":
+        async_add_entities(
+            RdhxSensor(coordinator, client, entry.entry_id, register)
+            for register in RDHX_SENSORS
+        )
+        return
 
     async def _async_discover_and_add():
         await hass.async_add_executor_job(client.discover)
@@ -152,3 +159,58 @@ def _device_class(descriptor):
     if descriptor.unit_name in {"VOLT_AMP_HOUR", "VOLT_AMP_REACTIVE_HOUR"}:
         return None
     return DEVICE_CLASS_MAP.get(descriptor.type_name)
+
+
+class RdhxSensor(CoordinatorEntity, SensorEntity):
+    """Representation of a USystems RDHx Modbus sensor."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, client, entry_id, register):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._register = register
+        self._attr_unique_id = f"{entry_id}_{register.key}"
+        self._attr_name = register.name
+        self._attr_device_info = client.device_info
+        self._attr_native_unit_of_measurement = UNIT_MAP.get(register.unit, register.unit)
+        self._attr_device_class = _sensor_device_class(register.device_class)
+        self._attr_state_class = _sensor_state_class(register.state_class)
+
+    @property
+    def available(self):
+        """Return whether the sensor is available."""
+        value = self.coordinator.data.get(self._register.key)
+        return value is not None and value.get("available", False)
+
+    @property
+    def native_value(self):
+        """Return the sensor value."""
+        value = self.coordinator.data.get(self._register.key)
+        if not value:
+            return None
+        return value.get("value")
+
+    @property
+    def extra_state_attributes(self):
+        """Return register metadata."""
+        return {
+            "ldcs_protocol": "modbus",
+            "modbus_address": self._register.address,
+            "modbus_register_type": self._register.register_type,
+            "modbus_data_type": self._register.data_type,
+        }
+
+
+def _sensor_device_class(value):
+    if value == "temperature":
+        return SensorDeviceClass.TEMPERATURE
+    return None
+
+
+def _sensor_state_class(value):
+    if value == "measurement":
+        return SensorStateClass.MEASUREMENT
+    if value == "total_increasing":
+        return SensorStateClass.TOTAL_INCREASING
+    return None

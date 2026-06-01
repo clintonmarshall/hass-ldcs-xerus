@@ -20,7 +20,11 @@
 - `host`: IP address or DNS name of the RDHx controller.
 - `modbus_port`: Modbus TCP port, usually `502`.
 - `modbus_slave_id`: Modbus slave ID.
-- `scan_interval`: polling interval in seconds. Native Modbus telemetry is planned as the next adapter.
+- `scan_interval`: polling interval in seconds.
+
+The USystems RDHx Modbus adapter is native to LDCS. The host, port, and slave ID
+come from the config entry you create in the UI; LDCS does not rely on the
+hard-coded `modbus.yaml` host.
 
 ### Rack Metadata
 

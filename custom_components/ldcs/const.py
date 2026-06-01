@@ -27,4 +27,6 @@ PRODUCT_TYPES = [PRODUCT_XERUS_PDU, PRODUCT_USYSTEMS_RDHX, PRODUCT_RACK_DASHBOAR
 RACK_ROLES = ["left_pdu", "right_pdu", "cooling", "busway", "sensor_strip", "rack"]
 MQTT_REFRESH_DEBOUNCE = 2
 
-PLATFORMS = ["button", "sensor", "switch"]
+XERUS_PLATFORMS = ["button", "sensor", "switch"]
+USYSTEMS_RDHX_PLATFORMS = ["binary_sensor", "sensor"]
+PLATFORMS = sorted({*XERUS_PLATFORMS, *USYSTEMS_RDHX_PLATFORMS})
