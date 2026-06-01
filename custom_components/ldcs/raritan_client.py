@@ -219,6 +219,7 @@ class RaritanClient:
         self.agent = None
         self.pdu = None
         self.cascade_manager = None
+        self.outlet_group_manager = None
         self.asset_logger = None
         self.alerted_sensor_manager = None
         self.alarm_manager = None
@@ -287,6 +288,7 @@ class RaritanClient:
             self.cascade_manager = (
                 cascading.CascadeManager("/cascade", self.agent) if cascading is not None else None
             )
+            self.outlet_group_manager = pdumodel.OutletGroupManager("/model/outletgroup", self.agent)
             self.asset_logger = assetmgrmodel.AssetStripLogger("/model/assetstriplogger", self.agent)
             self.alerted_sensor_manager = sensors.AlertedSensorManager(
                 "/model/alertedsensormanager", self.agent
@@ -329,6 +331,7 @@ class RaritanClient:
                             "pdu_link_status": link_status,
                         },
                     )
+                self._collect_outlet_groups(descriptors)
                 self._collect_peripherals(descriptors)
                 self._collect_asset_logger(descriptors)
                 self._collect_asset_inventory(descriptors)
@@ -692,6 +695,59 @@ class RaritanClient:
                 device_info,
                 pdu_attributes,
             )
+
+    def _collect_outlet_groups(self, descriptors):
+        """Collect sensors for Xerus outlet groups."""
+        if self.outlet_group_manager is None:
+            return
+        try:
+            groups = self.outlet_group_manager.getAllGroups()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to read outlet groups on %s: %s", self.host, err)
+            return
+
+        for group_id, group in _iter_map(groups):
+            attributes = self._outlet_group_attributes(group_id, group)
+            device_info = self._outlet_group_device_info(group_id, attributes)
+            self._collect_from_device(
+                descriptors,
+                f"Outlet group {group_id}",
+                group,
+                attributes,
+                device_info,
+            )
+
+    def _outlet_group_attributes(self, group_id, group):
+        """Return settings and member metadata for one outlet group."""
+        try:
+            metadata = group.getMetaData()
+        except Exception:  # noqa: BLE001
+            metadata = None
+        try:
+            settings = group.getSettings()
+        except Exception:  # noqa: BLE001
+            settings = None
+
+        members = getattr(settings, "members", None) or getattr(metadata, "members", None) or []
+        return {
+            "outlet_group_id": group_id,
+            "outlet_group_name": getattr(settings, "name", None) or getattr(metadata, "name", None),
+            "outlet_group_members": _json_safe(members),
+            "outlet_group_member_count": len(members),
+            "pdu_link_role": "outlet_group",
+        }
+
+    def _outlet_group_device_info(self, group_id, attributes):
+        """Return a separate Home Assistant device for an outlet group."""
+        group_name = attributes.get("outlet_group_name") or f"Outlet Group {group_id}"
+        return {
+            "identifiers": {(DOMAIN, f"{self.device_identifier or self.host}_outlet_group_{group_id}")},
+            "manufacturer": self._metadata.get("manufacturer") or "Legrand",
+            "model": "Xerus Outlet Group",
+            "name": group_name,
+            "sw_version": self._metadata.get("fw_revision"),
+            "configuration_url": f"https://{self.host}",
+        }
 
     def _collect_children(self, descriptors, label, getter, pdu_id=0, device_info=None, base_attributes=None):
         try:
@@ -1327,6 +1383,8 @@ class RaritanClient:
         if self.profile == "basic":
             if context == "PDU":
                 return field in {"activeEnergy", "activePower", "apparentPower", "current", "lineFrequency", "powerFactor", "voltage"}
+            if context.startswith("Outlet group"):
+                return field in {"activeEnergy", "activePower", "apparentPower", "powerFactor", "state", "outletState"}
             if context.startswith("Inlet"):
                 return field in BASIC_FIELDS
             if context.startswith("Outlet"):
@@ -1355,7 +1413,7 @@ def _sensor_type_names(sensor):
 
 def _is_electrical_context(context):
     return context == "PDU" or context.startswith(
-        ("Inlet", "Outlet", "OCP", "Transfer switch", "Power meter")
+        ("Inlet", "Outlet", "Outlet group", "OCP", "Transfer switch", "Power meter")
     )
 
 
@@ -1368,6 +1426,16 @@ def _pretty_name(context, field, type_name):
 
 def _slug(value):
     return re.sub(r"[^a-z0-9_]+", "_", value.lower()).strip("_")
+
+
+def _iter_map(value):
+    """Yield items from SDK maps, Python dicts, or key/value pair sequences."""
+    if isinstance(value, dict):
+        yield from value.items()
+        return
+    for item in value or []:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            yield item[0], item[1]
 
 
 def _reading_status_attrs(reading):
