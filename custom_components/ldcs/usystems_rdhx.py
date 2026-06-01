@@ -31,7 +31,7 @@ class RdhxRegister:
     register_type: str
     data_type: str = "int16"
     scale: float | None = None
-    precision: int | None = None
+    precision: int | None = 2
     unit: str | None = None
     device_class: str | None = None
     state_class: str | None = None

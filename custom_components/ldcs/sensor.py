@@ -90,6 +90,7 @@ class RaritanSensor(CoordinatorEntity, SensorEntity):
     """Representation of a Xerus sensor."""
 
     _attr_has_entity_name = True
+    _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator, client, entry_id, descriptor):
         """Initialize the sensor."""
@@ -165,6 +166,7 @@ class RdhxSensor(CoordinatorEntity, SensorEntity):
     """Representation of a USystems RDHx Modbus sensor."""
 
     _attr_has_entity_name = True
+    _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator, client, entry_id, register):
         """Initialize the sensor."""
