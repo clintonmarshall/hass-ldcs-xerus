@@ -6,7 +6,6 @@ from datetime import timedelta
 import logging
 from pathlib import Path
 
-from homeassistant.components.http import StaticPathConfig, async_register_static_paths
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components import mqtt
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
@@ -36,6 +35,12 @@ from .const import (
 from .dashboard import async_install_rack_dashboard
 from .raritan_client import RaritanClient, RaritanError
 from .usystems_rdhx import USystemsRdhxClient
+
+try:
+    from homeassistant.components.http import StaticPathConfig, async_register_static_paths
+except ImportError:
+    StaticPathConfig = None
+    async_register_static_paths = None
 
 _LOGGER = logging.getLogger(__name__)
 MQTT_FLEET_TOPIC = "raritan/#"
@@ -146,10 +151,17 @@ async def _async_register_frontend_assets(hass: HomeAssistant) -> None:
     registered_key = f"{DOMAIN}_static_registered"
     if hass.data.get(registered_key):
         return
-    await async_register_static_paths(
-        hass,
-        [StaticPathConfig(STATIC_URL_PATH, str(STATIC_PATH), True)],
-    )
+    if async_register_static_paths is not None and StaticPathConfig is not None:
+        await async_register_static_paths(
+            hass,
+            [StaticPathConfig(STATIC_URL_PATH, str(STATIC_PATH), True)],
+        )
+    else:
+        hass.http.async_register_static_path(
+            STATIC_URL_PATH,
+            str(STATIC_PATH),
+            cache_headers=True,
+        )
     hass.data[registered_key] = True
 
 
