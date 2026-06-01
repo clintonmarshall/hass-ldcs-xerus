@@ -15,6 +15,11 @@ from raritan.rpc.BulkRequestHelper import perform_bulk
 from raritan.rpc import assetmgrmodel, event, pdumodel, sensors
 
 try:
+    from raritan.rpc import peripheral
+except ImportError:
+    peripheral = None
+
+try:
     from raritan.rpc import cascading
 except ImportError:
     cascading = None
@@ -792,62 +797,105 @@ class RaritanClient:
                 self._collect_from_struct(descriptors, pole_context, pole, pole_attributes, None, device_info)
 
     def _collect_peripherals(self, descriptors, pdu, pdu_id=0, device_info=None, base_attributes=None):
+        inventory = []
+        for manager_target, manager in self._peripheral_managers(pdu, pdu_id):
+            try:
+                slots = manager.getDeviceSlots()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Unable to read peripheral device slots at %s on %s: %s", manager_target, self.host, err)
+                continue
+            for index, slot in enumerate(slots, start=1):
+                try:
+                    settings = slot.getSettings()
+                    name = settings.name or f"External Sensor {index}"
+                    device = slot.getDevice()
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Unable to read peripheral slot %s at %s on %s: %s", index, manager_target, self.host, err)
+                    continue
+                if getattr(device, "device", None) is not None:
+                    type_name, unit_name = _sensor_type_names(device.device)
+                    sensor_name = settings.name or f"External Sensor {index}"
+                    sensor_description = getattr(settings, "description", "")
+                    inventory.append(
+                        {
+                            "pdu_id": pdu_id,
+                            "slot": index,
+                            "name": sensor_name,
+                            "configured_name": settings.name,
+                            "description": sensor_description,
+                            "type": type_name,
+                            "unit": unit_name,
+                            "target": getattr(device.device, "target", None),
+                            "manager_target": manager_target,
+                        }
+                    )
+                    self._add_sensor(
+                        descriptors,
+                        name,
+                        "sensor",
+                        device.device,
+                        {
+                            **(base_attributes or {}),
+                            "sensor_name": settings.name,
+                            "sensor_configured_name": settings.name,
+                            "sensor_description": sensor_description,
+                            "sensor_slot": index,
+                            "sensor_type": type_name,
+                            "peripheral_manager_target": manager_target,
+                        },
+                        device_info=device_info,
+                    )
+            if inventory:
+                break
+        self._external_sensor_inventory_by_pdu[pdu_id] = inventory
+
+    def _peripheral_managers(self, pdu, pdu_id=0):
+        """Yield peripheral managers for a primary or linked PDU."""
+        tried = set()
         try:
             manager = pdu.getPeripheralDeviceManager()
-            slots = manager.getDeviceSlots()
         except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Unable to read peripheral device slots on %s: %s", self.host, err)
-            return
+            _LOGGER.debug("Unable to read peripheral manager from PDU %s on %s: %s", pdu_id, self.host, err)
+        else:
+            target = getattr(manager, "target", f"pdu:{pdu_id}:manager")
+            tried.add(target)
+            yield target, manager
 
-        inventory = []
-        for index, slot in enumerate(slots, start=1):
-            try:
-                settings = slot.getSettings()
-                name = settings.name or f"Peripheral {index}"
-                device = slot.getDevice()
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("Unable to read peripheral slot %s on %s: %s", index, self.host, err)
+        if peripheral is None:
+            return
+        for target in self._peripheral_manager_targets(pdu_id):
+            if target in tried:
                 continue
-            if getattr(device, "device", None) is not None:
-                type_name, unit_name = _sensor_type_names(device.device)
-                sensor_name = settings.name or f"External Sensor {index}"
-                sensor_description = getattr(settings, "description", "")
-                inventory.append(
-                    {
-                        "pdu_id": pdu_id,
-                        "slot": index,
-                        "name": sensor_name,
-                        "configured_name": settings.name,
-                        "description": sensor_description,
-                        "type": type_name,
-                        "unit": unit_name,
-                        "target": getattr(device.device, "target", None),
-                    }
-                )
-                self._add_sensor(
-                    descriptors,
-                    name,
-                    "sensor",
-                    device.device,
-                    {
-                        **(base_attributes or {}),
-                        "sensor_name": settings.name,
-                        "sensor_configured_name": settings.name,
-                        "sensor_description": sensor_description,
-                        "sensor_slot": index,
-                        "sensor_type": type_name,
-                    },
-                    device_info=device_info,
-                )
-        self._external_sensor_inventory_by_pdu[pdu_id] = inventory
+            try:
+                manager = peripheral.DeviceManager(target, self.agent)
+                manager.getDeviceSlots()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Unable to probe peripheral manager at %s on %s: %s", target, self.host, err)
+                continue
+            yield target, manager
+
+    def _peripheral_manager_targets(self, pdu_id=0):
+        """Return likely peripheral manager resource IDs for a primary or linked PDU."""
+        if pdu_id in (0, 1):
+            return (
+                "/model/peripheraldevicemanager",
+                "/model/peripheraldevices",
+            )
+        return (
+            f"/link/{pdu_id}/model/peripheraldevicemanager",
+            f"/link/{pdu_id}/model/peripheraldevices",
+            f"/model/pdu/{pdu_id}/peripheraldevicemanager",
+            f"/model/pdu/{pdu_id}/peripheraldevices",
+        )
 
     def _collect_external_sensor_inventory(self, descriptors, pdu_id=0, device_info=None, attributes=None):
         """Add a summary entity for attached external sensors."""
         suffix = "" if pdu_id in (0, 1) else f"_pdu_{pdu_id}"
+        name_prefix = "" if pdu_id in (0, 1) else f"PDU Link {pdu_id} "
         descriptors.append(
             SensorDescriptor(
                 key=_slug(f"{self.host}{suffix}_external_sensor_inventory"),
-                name="External Sensor Inventory",
+                name=f"{name_prefix}External Sensor Inventory",
                 context="External sensors",
                 target=f"/model/pdu/{pdu_id}/peripheraldevicemanager",
                 kind=SensorKind.INVENTORY,
@@ -889,10 +937,11 @@ class RaritanClient:
     def _collect_asset_inventory(self, descriptors, pdu_id=0, device_info=None, attributes=None):
         """Add the visual asset strip inventory entity."""
         suffix = "" if pdu_id in (0, 1) else f"_pdu_{pdu_id}"
+        name_prefix = "" if pdu_id in (0, 1) else f"PDU Link {pdu_id} "
         descriptors.append(
             SensorDescriptor(
                 key=_slug(f"{self.host}{suffix}_asset_strip_inventory"),
-                name="Asset Strip Inventory",
+                name=f"{name_prefix}Asset Strip Inventory",
                 context="Asset strip",
                 target=self._asset_strip_targets(pdu_id)[0],
                 kind=SensorKind.ASSET_INVENTORY,
@@ -1246,7 +1295,7 @@ class RaritanClient:
             return
 
         type_name, unit_name = _sensor_type_names(sensor)
-        name = _pretty_name(context, field, type_name)
+        name = _pretty_name(context, field, type_name, attributes)
         descriptor = SensorDescriptor(
             key=key,
             name=name,
@@ -1520,10 +1569,13 @@ def _is_electrical_context(context):
     )
 
 
-def _pretty_name(context, field, type_name):
+def _pretty_name(context, field, type_name, attributes=None):
     field_name = re.sub(r"(?<!^)(?=[A-Z])", " ", field).replace("_", " ").title()
     if field_name.lower() == "sensor" and type_name:
         field_name = type_name.replace("_", " ").title()
+    display_name = (attributes or {}).get("display_name") or (attributes or {}).get("sensor_configured_name")
+    if display_name and display_name != context:
+        return f"{context} {display_name} {field_name}"
     return f"{context} {field_name}"
 
 
