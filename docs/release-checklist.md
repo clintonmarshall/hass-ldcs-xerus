@@ -29,6 +29,6 @@ python tools/package_release.py
 8. Tag the release:
 
 ```bash
-git tag v0.6.19
-git push origin v0.6.19
+git tag v0.6.20
+git push origin v0.6.20
 ```

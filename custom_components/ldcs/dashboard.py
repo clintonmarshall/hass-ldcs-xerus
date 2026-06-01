@@ -484,17 +484,17 @@ def _slug(value: str) -> str:
     return slug or "rack"
 
 
-def _natural_sort_key(value: str) -> list[int | str]:
-    parts: list[int | str] = []
+def _natural_sort_key(value: str) -> list[tuple[int, int | str]]:
+    parts: list[tuple[int, int | str]] = []
     current = ""
     for char in value:
         if char.isdigit():
             current += char
         else:
             if current:
-                parts.append(int(current))
+                parts.append((1, int(current)))
                 current = ""
-            parts.append(char)
+            parts.append((0, char))
     if current:
-        parts.append(int(current))
+        parts.append((1, int(current)))
     return parts
