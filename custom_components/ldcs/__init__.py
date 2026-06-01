@@ -37,9 +37,13 @@ from .raritan_client import RaritanClient, RaritanError
 from .usystems_rdhx import USystemsRdhxClient
 
 try:
-    from homeassistant.components.http import StaticPathConfig, async_register_static_paths
+    from homeassistant.components.http import StaticPathConfig
 except ImportError:
     StaticPathConfig = None
+
+try:
+    from homeassistant.components.http import async_register_static_paths
+except ImportError:
     async_register_static_paths = None
 
 _LOGGER = logging.getLogger(__name__)
@@ -151,17 +155,23 @@ async def _async_register_frontend_assets(hass: HomeAssistant) -> None:
     registered_key = f"{DOMAIN}_static_registered"
     if hass.data.get(registered_key):
         return
+    if StaticPathConfig is None:
+        _LOGGER.debug("Unable to register LDCS frontend assets: StaticPathConfig unavailable")
+        return
+    configs = [StaticPathConfig(STATIC_URL_PATH, str(STATIC_PATH), True)]
     if async_register_static_paths is not None and StaticPathConfig is not None:
-        await async_register_static_paths(
-            hass,
-            [StaticPathConfig(STATIC_URL_PATH, str(STATIC_PATH), True)],
-        )
-    else:
+        await async_register_static_paths(hass, configs)
+    elif hasattr(hass.http, "async_register_static_paths"):
+        await hass.http.async_register_static_paths(configs)
+    elif hasattr(hass.http, "async_register_static_path"):
         hass.http.async_register_static_path(
             STATIC_URL_PATH,
             str(STATIC_PATH),
             cache_headers=True,
         )
+    else:
+        _LOGGER.debug("Unable to register LDCS frontend assets: no compatible HTTP helper")
+        return
     hass.data[registered_key] = True
 
 
