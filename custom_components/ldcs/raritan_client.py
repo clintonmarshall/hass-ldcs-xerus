@@ -245,6 +245,8 @@ class RaritanClient:
         self._security_state_last = {}
         self._security_events = []
         self._asset_strips = {}
+        self._asset_strip_selected_targets = {}
+        self._asset_strip_probe_errors = {}
         self._external_sensor_inventory_by_pdu = {}
         self._outlet_state_devices_by_key = {}
         self._outlet_details = {}
@@ -322,6 +324,8 @@ class RaritanClient:
                 self._sensors_by_key = {}
                 self._waveform_sources = {}
                 self._asset_strips = {}
+                self._asset_strip_selected_targets = {}
+                self._asset_strip_probe_errors = {}
                 self._external_sensor_inventory_by_pdu = {}
                 self._outlet_state_devices_by_key = {}
                 self._outlet_details = {}
@@ -962,7 +966,10 @@ class RaritanClient:
         """Return rack-unit asset tag occupancy when an asset strip is exposed."""
         attrs = descriptor.attributes or {}
         pdu_id = attrs.get("pdu_id", 0)
-        strip = self._asset_strip_interface(pdu_id, attrs.get("asset_strip_targets"))
+        targets = attrs.get("asset_strip_targets")
+        strip = self._asset_strip_interface(pdu_id, targets)
+        probe_attrs = self._asset_strip_probe_attrs(pdu_id, targets)
+        recent_records = self._asset_log_recent_records()
         if strip is None:
             return {
                 "available": True,
@@ -972,6 +979,8 @@ class RaritanClient:
                     "pdu_id": pdu_id,
                     "rack_unit_count": 42,
                     "asset_tags": [],
+                    **probe_attrs,
+                    "asset_log_recent_records": recent_records,
                     "telemetry_source": "json_rpc",
                 },
             }
@@ -979,6 +988,7 @@ class RaritanClient:
             state = _enum_name(strip.getState())
             strip_info = strip.getStripInfo()
             tags = strip.getAllTags()
+            rack_units = strip.getAllRackUnitInfos()
         except Exception as err:  # noqa: BLE001
             return _error_value(err)
         asset_tags = [_asset_tag_attrs(tag) for tag in tags]
@@ -991,30 +1001,64 @@ class RaritanClient:
                 "pdu_id": pdu_id,
                 "rack_unit_count": rack_unit_count,
                 "asset_tags": asset_tags,
+                "asset_rack_units": [_asset_rack_unit_attrs(unit) for unit in rack_units],
+                **probe_attrs,
+                "asset_log_recent_records": recent_records,
                 "main_tag_count": getattr(strip_info, "mainTagCount", None),
                 "blade_tag_count": getattr(strip_info, "bladeTagCount", None),
                 "max_main_tag_count": getattr(strip_info, "maxMainTagCount", None),
                 "max_blade_tag_count": getattr(strip_info, "maxBladeTagCount", None),
                 "blade_overflow": getattr(strip_info, "bladeOverflow", None),
+                "component_count": getattr(strip_info, "componentCount", None),
+                "cascade_state": _enum_name(getattr(strip_info, "cascadeState", None)),
                 "telemetry_source": "json_rpc",
             },
         }
+
+    def _asset_log_recent_records(self, count=20):
+        """Return recent asset strip logger records for dashboard diagnostics."""
+        try:
+            info = self.asset_logger.getInfo()
+            newest = getattr(info, "newestRecord", 0) or 0
+            oldest = getattr(info, "oldestRecord", 0) or 0
+            if newest <= 0:
+                return []
+            start = max(oldest, newest - count + 1)
+            _next_id, records = self.asset_logger.getRecords(start, count)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to read recent asset strip records on %s: %s", self.host, err)
+            return []
+        return [_asset_log_record_attrs(record) for record in records]
 
     def _asset_strip_interface(self, pdu_id=0, targets=None):
         """Return the first asset strip target that responds."""
         if pdu_id in self._asset_strips:
             return self._asset_strips[pdu_id]
+        probe_errors = []
         for target in targets or self._asset_strip_targets(pdu_id):
             try:
                 strip = assetmgrmodel.AssetStrip(target, self.agent)
                 strip.getState()
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("Unable to probe asset strip at %s on %s: %s", target, self.host, err)
+                probe_errors.append({"target": target, "error": str(err)})
                 continue
             self._asset_strips[pdu_id] = strip
+            self._asset_strip_selected_targets[pdu_id] = target
+            self._asset_strip_probe_errors[pdu_id] = probe_errors
             return strip
         self._asset_strips[pdu_id] = None
+        self._asset_strip_selected_targets[pdu_id] = None
+        self._asset_strip_probe_errors[pdu_id] = probe_errors
         return None
+
+    def _asset_strip_probe_attrs(self, pdu_id=0, targets=None):
+        """Return asset strip discovery diagnostics for the inventory entity."""
+        return {
+            "asset_strip_target": self._asset_strip_selected_targets.get(pdu_id),
+            "asset_strip_probe_targets": list(targets or self._asset_strip_targets(pdu_id)),
+            "asset_strip_probe_errors": self._asset_strip_probe_errors.get(pdu_id, []),
+        }
 
     def _asset_strip_targets(self, pdu_id=0):
         """Return likely asset strip resource IDs for a primary or linked PDU."""
@@ -1023,17 +1067,29 @@ class RaritanClient:
                 "/model/assetstrip/0",
                 "/model/assetstrip",
                 "/model/assetstrips/0",
+                "/model/assetstrips",
                 "/model/assetstrip/1",
                 "/model/assetstrip/2",
+                "/model/assetstrips/1",
+                "/model/assetstrips/2",
             )
         return (
             f"/link/{pdu_id}/model/assetstrip/0",
             f"/link/{pdu_id}/model/assetstrip",
             f"/link/{pdu_id}/model/assetstrips/0",
+            f"/link/{pdu_id}/model/assetstrips",
             f"/link/{pdu_id}/model/assetstrip/1",
             f"/link/{pdu_id}/model/assetstrip/2",
+            f"/link/{pdu_id}/model/assetstrips/1",
+            f"/link/{pdu_id}/model/assetstrips/2",
             f"/model/pdu/{pdu_id}/assetstrip/0",
             f"/model/pdu/{pdu_id}/assetstrip",
+            f"/model/pdu/{pdu_id}/assetstrips/0",
+            f"/model/pdu/{pdu_id}/assetstrips",
+            f"/model/pdu/{pdu_id}/assetstrip/1",
+            f"/model/pdu/{pdu_id}/assetstrip/2",
+            f"/model/pdu/{pdu_id}/assetstrips/1",
+            f"/model/pdu/{pdu_id}/assetstrips/2",
         )
 
     def _collect_alarm_summary(self, descriptors):
@@ -1817,6 +1873,40 @@ def _asset_tag_attrs(tag):
         "family": getattr(tag, "familyDesc", ""),
         "programmable": getattr(tag, "programmable", None),
         "description": getattr(tag, "description", None),
+    }
+
+
+def _asset_rack_unit_attrs(unit):
+    """Return JSON-safe rack unit details from an asset strip."""
+    settings = getattr(unit, "settings", None)
+    return {
+        "rack_unit_number": getattr(unit, "rackUnitNumber", None),
+        "ru": (getattr(unit, "rackUnitNumber", 0) or 0) + 1,
+        "rack_unit_position": getattr(unit, "rackUnitPosition", None),
+        "rack_unit_relative_position": getattr(unit, "rackUnitRelativePosition", None),
+        "type": _enum_name(getattr(unit, "type", None)),
+        "size": getattr(unit, "size", None),
+        "asset_strip_cascade_position": getattr(unit, "assetStripCascadePosition", None),
+        "asset_strip_number_of_rack_units": getattr(unit, "assetStripNumberOfRackUnits", None),
+        "led_operation_mode": _enum_name(getattr(settings, "opmode", None)),
+        "led_mode": _enum_name(getattr(settings, "mode", None)),
+        "led_color": _json_safe(getattr(settings, "color", None)),
+    }
+
+
+def _asset_log_record_attrs(record):
+    """Return JSON-safe asset logger details."""
+    return {
+        "timestamp": _timestamp(getattr(record, "timestamp", None)),
+        "type": _enum_name(getattr(record, "type", None)),
+        "asset_strip_number": getattr(record, "assetStripNumber", None),
+        "rack_unit_number": getattr(record, "rackUnitNumber", None),
+        "ru": (getattr(record, "rackUnitNumber", 0) or 0) + 1,
+        "rack_unit_position": getattr(record, "rackUnitPosition", None),
+        "slot_number": getattr(record, "slotNumber", None),
+        "tag_id": getattr(record, "tagId", None),
+        "parent_blade_id": getattr(record, "parentBladeId", None),
+        "state": _enum_name(getattr(record, "state", None)),
     }
 
 
