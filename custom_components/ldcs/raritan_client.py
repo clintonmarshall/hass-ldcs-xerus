@@ -529,7 +529,9 @@ class RaritanClient:
                 continue
 
             for descriptor, response in zip(chunk_descriptors, responses):
-                if not isinstance(response, Exception):
+                if isinstance(response, Exception):
+                    self._minmax_cache[descriptor.key] = _minmax_error_attrs(response)
+                else:
                     self._minmax_cache[descriptor.key] = _minmax_attrs(response)
         self._last_minmax_refresh = now
 
@@ -1673,13 +1675,40 @@ def _binary_state_label(value):
 
 def _minmax_attrs(minmax):
     """Return JSON-safe minimum and maximum reading details."""
+    valid = getattr(minmax, "valid", False)
+    minimum = getattr(minmax, "minReading", None)
+    minimum_at = _timestamp(getattr(minmax, "minReadingTimestamp", None))
+    maximum = getattr(minmax, "maxReading", None)
+    maximum_at = _timestamp(getattr(minmax, "maxReadingTimestamp", None))
+    observed_since = _timestamp(getattr(minmax, "observedSince", None))
     return {
-        "extrema_valid": getattr(minmax, "valid", False),
-        "minimum_reading": getattr(minmax, "minReading", None),
-        "minimum_reading_timestamp": _timestamp(getattr(minmax, "minReadingTimestamp", None)),
-        "maximum_reading": getattr(minmax, "maxReading", None),
-        "maximum_reading_timestamp": _timestamp(getattr(minmax, "maxReadingTimestamp", None)),
-        "extrema_observed_since": _timestamp(getattr(minmax, "observedSince", None)),
+        "extrema_supported": True,
+        "extrema_valid": valid,
+        "minimum_recorded_value": minimum,
+        "minimum_recorded_at": minimum_at,
+        "maximum_recorded_value": maximum,
+        "maximum_recorded_at": maximum_at,
+        "extrema_observed_since": observed_since,
+        "extrema_last_read_at": datetime.now(timezone.utc).isoformat(),
+        "minimum_reading": minimum,
+        "minimum_reading_timestamp": minimum_at,
+        "maximum_reading": maximum,
+        "maximum_reading_timestamp": maximum_at,
+    }
+
+
+def _minmax_error_attrs(err):
+    """Return explicit extrema support details when a sensor rejects min/max."""
+    return {
+        "extrema_supported": False,
+        "extrema_valid": False,
+        "minimum_recorded_value": None,
+        "minimum_recorded_at": None,
+        "maximum_recorded_value": None,
+        "maximum_recorded_at": None,
+        "extrema_observed_since": None,
+        "extrema_last_read_at": datetime.now(timezone.utc).isoformat(),
+        "extrema_error": str(err),
     }
 
 
