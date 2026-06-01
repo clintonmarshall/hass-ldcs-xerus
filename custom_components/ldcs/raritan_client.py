@@ -1481,9 +1481,9 @@ def _binary_state_value(state, source):
 def _ocp_trip_state_value(state):
     value = _binary_state_value(state, "ocp_trip")
     if value["value"] == "On":
-        value["value"] = "Tripped"
-    elif value["value"] == "Off":
         value["value"] = "Normal"
+    elif value["value"] == "Off":
+        value["value"] = "Tripped"
     return value
 
 
