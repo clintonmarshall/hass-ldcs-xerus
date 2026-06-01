@@ -178,6 +178,7 @@ class SensorKind(Enum):
     ALARM_SUMMARY = "alarm_summary"
     SECURITY = "security"
     WAVEFORM = "waveform"
+    INVENTORY = "inventory"
 
 
 @dataclass(frozen=True)
@@ -239,6 +240,7 @@ class RaritanClient:
         self._security_state_last = {}
         self._security_events = []
         self._asset_strip = None
+        self._external_sensor_inventory = []
         self._outlet_state_devices_by_key = {}
         self._outlet_details = {}
         self._ocp_details = {}
@@ -314,6 +316,7 @@ class RaritanClient:
                 descriptors = []
                 self._sensors_by_key = {}
                 self._waveform_sources = {}
+                self._external_sensor_inventory = []
                 self._outlet_state_devices_by_key = {}
                 self._outlet_details = {}
                 self._ocp_details = {}
@@ -333,6 +336,7 @@ class RaritanClient:
                     )
                 self._collect_outlet_groups(descriptors)
                 self._collect_peripherals(descriptors)
+                self._collect_external_sensor_inventory(descriptors)
                 self._collect_asset_logger(descriptors)
                 self._collect_asset_inventory(descriptors)
                 self._collect_alarm_summary(descriptors)
@@ -359,6 +363,7 @@ class RaritanClient:
         alarm_descriptors = []
         security_descriptors = []
         waveform_descriptors = []
+        inventory_descriptors = []
         sensor_requests = []
         sensor_descriptors = []
         prometheus_samples = {}
@@ -382,6 +387,9 @@ class RaritanClient:
                 continue
             if descriptor.kind == SensorKind.WAVEFORM:
                 waveform_descriptors.append(descriptor)
+                continue
+            if descriptor.kind == SensorKind.INVENTORY:
+                inventory_descriptors.append(descriptor)
                 continue
             sensor = self._sensors_by_key.get(descriptor.key)
             prometheus_sample = (
@@ -485,6 +493,9 @@ class RaritanClient:
 
         if waveform_descriptors:
             data.update(self._read_waveforms(waveform_descriptors))
+
+        if inventory_descriptors:
+            data.update(self._read_inventory(inventory_descriptors))
 
         for outlet_id, sample in self.prometheus.outlet_states(prometheus_samples).items():
             data[self.outlet_state_key(outlet_id)] = {
@@ -758,8 +769,7 @@ class RaritanClient:
         for index, child in enumerate(children, start=1):
             context = f"{label} {index}"
             attributes = {**(base_attributes or {})}
-            if not (label == "Outlet" and index != 1):
-                attributes.update(self._device_attributes(label, index, child, pdu_id))
+            attributes.update(self._device_attributes(label, index, child, pdu_id))
             self._collect_from_device(descriptors, context, child, attributes, device_info)
             self._collect_waveform(descriptors, label, index, child, attributes, device_info)
 
@@ -796,6 +806,20 @@ class RaritanClient:
                 _LOGGER.debug("Unable to read peripheral slot %s on %s: %s", index, self.host, err)
                 continue
             if getattr(device, "device", None) is not None:
+                type_name, unit_name = _sensor_type_names(device.device)
+                sensor_name = settings.name or f"External Sensor {index}"
+                sensor_description = getattr(settings, "description", "")
+                self._external_sensor_inventory.append(
+                    {
+                        "slot": index,
+                        "name": sensor_name,
+                        "configured_name": settings.name,
+                        "description": sensor_description,
+                        "type": type_name,
+                        "unit": unit_name,
+                        "target": getattr(device.device, "target", None),
+                    }
+                )
                 self._add_sensor(
                     descriptors,
                     name,
@@ -803,10 +827,28 @@ class RaritanClient:
                     device.device,
                     {
                         "sensor_name": settings.name,
-                        "sensor_description": getattr(settings, "description", ""),
+                        "sensor_configured_name": settings.name,
+                        "sensor_description": sensor_description,
                         "sensor_slot": index,
+                        "sensor_type": type_name,
                     },
                 )
+
+    def _collect_external_sensor_inventory(self, descriptors):
+        """Add a summary entity for attached external sensors."""
+        descriptors.append(
+            SensorDescriptor(
+                key=_slug(f"{self.host}_external_sensor_inventory"),
+                name="External Sensor Inventory",
+                context="External sensors",
+                target="/model/peripheraldevicemanager",
+                kind=SensorKind.INVENTORY,
+                field="external_sensor_inventory",
+                type_name="INVENTORY",
+                asset_field="external_sensor_inventory",
+                device_info=self.device_info,
+            )
+        )
 
     def _collect_asset_logger(self, descriptors):
         try:
@@ -1202,6 +1244,8 @@ class RaritanClient:
             "pdu_id": pdu_id,
             "device_label": getattr(metadata, "label", None),
             "configured_name": getattr(settings, "name", ""),
+            "display_name": getattr(settings, "name", "") or getattr(metadata, "label", None),
+            "description": getattr(settings, "description", ""),
         }
         rating = getattr(metadata, "rating", None)
         if rating is not None:
@@ -1353,6 +1397,27 @@ class RaritanClient:
             )
             for descriptor in descriptors
         }
+
+    def _read_inventory(self, descriptors):
+        """Return inventory summary entities."""
+        data = {}
+        for descriptor in descriptors:
+            if descriptor.asset_field == "external_sensor_inventory":
+                sensors_by_type = {}
+                for sensor in self._external_sensor_inventory:
+                    sensor_type = sensor.get("type") or "UNKNOWN"
+                    sensors_by_type[sensor_type] = sensors_by_type.get(sensor_type, 0) + 1
+                data[descriptor.key] = {
+                    "available": True,
+                    "value": len(self._external_sensor_inventory),
+                    "attributes": {
+                        "external_sensor_count": len(self._external_sensor_inventory),
+                        "external_sensor_type_counts": sensors_by_type,
+                        "external_sensors": self._external_sensor_inventory,
+                        "telemetry_source": "json_rpc",
+                    },
+                }
+        return data
 
     def _waveform_value(self, waveform):
         """Return a JSON-safe Home Assistant value for an SDK waveform."""
@@ -1612,13 +1677,29 @@ def _alarm_attrs(alarm):
 
 def _asset_tag_attrs(tag):
     """Return JSON-safe asset tag details for dashboard rack occupancy."""
+    tag_id = (
+        getattr(tag, "id", None)
+        or getattr(tag, "tagId", None)
+        or getattr(tag, "epc", None)
+        or getattr(tag, "rawId", "")
+    )
+    name = (
+        getattr(tag, "name", None)
+        or getattr(tag, "assetName", None)
+        or getattr(tag, "label", None)
+        or getattr(tag, "userLabel", None)
+    )
     return {
+        "tag_id": tag_id,
+        "name": name,
+        "configured_name": name,
         "rack_unit_number": getattr(tag, "rackUnitNumber", None),
         "ru": (getattr(tag, "rackUnitNumber", 0) or 0) + 1,
         "slot_number": getattr(tag, "slotNumber", None),
         "raw_id": getattr(tag, "rawId", ""),
         "family": getattr(tag, "familyDesc", ""),
         "programmable": getattr(tag, "programmable", None),
+        "description": getattr(tag, "description", None),
     }
 
 
