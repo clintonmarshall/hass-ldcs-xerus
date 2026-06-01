@@ -201,6 +201,7 @@ class RaritanClient:
         password: str,
         verify_ssl: bool = False,
         profile: str = "basic",
+        device_identifier: str | None = None,
     ):
         """Initialize the client."""
         self.host = host
@@ -208,6 +209,7 @@ class RaritanClient:
         self.password = password
         self.verify_ssl = verify_ssl
         self.profile = profile
+        self.device_identifier = device_identifier
         self.agent = None
         self.pdu = None
         self.asset_logger = None
@@ -237,7 +239,7 @@ class RaritanClient:
     @property
     def device_info(self):
         """Return Home Assistant device info."""
-        serial = self._metadata.get("serial_number") or self.host
+        serial = self.device_identifier or self._metadata.get("serial_number") or self.host
         name = self._metadata.get("name") or self._metadata.get("model") or f"Xerus device {self.host}"
         return {
             "identifiers": {(DOMAIN, serial)},

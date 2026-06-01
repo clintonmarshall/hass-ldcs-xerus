@@ -48,6 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         password=entry.data[CONF_PASSWORD],
         verify_ssl=entry.data.get(CONF_VERIFY_SSL, False),
         profile=entry.options.get(CONF_PROFILE, entry.data.get(CONF_PROFILE, DEFAULT_PROFILE)),
+        device_identifier=entry.unique_id,
     )
 
     async def _async_update_data():
