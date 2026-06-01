@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 import logging
+from pathlib import Path
 
+from homeassistant.components.http import StaticPathConfig, async_register_static_paths
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components import mqtt
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
@@ -14,6 +16,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    CONF_CREATE_DASHBOARD,
     CONF_PROFILE,
     CONF_PRODUCT_TYPE,
     CONF_RACK_NAME,
@@ -30,22 +33,29 @@ from .const import (
     USYSTEMS_RDHX_PLATFORMS,
     XERUS_PLATFORMS,
 )
+from .dashboard import async_install_rack_dashboard
 from .raritan_client import RaritanClient, RaritanError
 from .usystems_rdhx import USystemsRdhxClient
 
 _LOGGER = logging.getLogger(__name__)
 MQTT_FLEET_TOPIC = "raritan/#"
+STATIC_URL_PATH = "/ldcs_static"
+STATIC_PATH = Path(__file__).parent / "www"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up an LDCS device from a config entry."""
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    await _async_register_frontend_assets(hass)
     product_type = entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_XERUS_PDU)
     if product_type == PRODUCT_USYSTEMS_RDHX:
         await _async_setup_usystems_rdhx(hass, entry)
+        _async_schedule_dashboard_install(hass, entry)
         return True
 
     if product_type != PRODUCT_XERUS_PDU:
         await _async_setup_metadata_entry(hass, entry, product_type)
+        _async_schedule_dashboard_install(hass, entry)
         return True
 
     client = RaritanClient(
@@ -122,7 +132,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_setup_fleet_mqtt(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, XERUS_PLATFORMS)
+    _async_schedule_dashboard_install(hass, entry)
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply option changes that do not need a full reload."""
+    await _async_maybe_install_dashboard(hass, entry)
+
+
+async def _async_register_frontend_assets(hass: HomeAssistant) -> None:
+    """Serve bundled LDCS Lovelace cards from the integration."""
+    registered_key = f"{DOMAIN}_static_registered"
+    if hass.data.get(registered_key):
+        return
+    await async_register_static_paths(
+        hass,
+        [StaticPathConfig(STATIC_URL_PATH, str(STATIC_PATH), True)],
+    )
+    hass.data[registered_key] = True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -260,3 +288,36 @@ async def _async_setup_fleet_mqtt(hass: HomeAssistant) -> None:
         hass.data[cancel_key] = _async_cancel_refresh
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Unable to subscribe to %s: %s", MQTT_FLEET_TOPIC, err)
+
+
+def _dashboard_requested(entry: ConfigEntry) -> bool:
+    """Return whether this entry asked for dashboard generation."""
+    return bool(
+        entry.options.get(
+            CONF_CREATE_DASHBOARD,
+            entry.data.get(CONF_CREATE_DASHBOARD, False),
+        )
+    )
+
+
+async def _async_maybe_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Install the dashboard if the entry requested one."""
+    if not _dashboard_requested(entry):
+        return
+    try:
+        await async_install_rack_dashboard(hass, entry)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Unable to install LDCS rack dashboard: %s", err)
+
+
+def _async_schedule_dashboard_install(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Schedule dashboard installation after entity discovery has had time to run."""
+    if not _dashboard_requested(entry):
+        return
+    hass.async_create_task(_async_maybe_install_dashboard(hass, entry))
+
+    @callback
+    def _async_install_later(_now):
+        hass.async_create_task(_async_maybe_install_dashboard(hass, entry))
+
+    entry.async_on_unload(async_call_later(hass, 30, _async_install_later))

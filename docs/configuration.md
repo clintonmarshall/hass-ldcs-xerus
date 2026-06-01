@@ -31,7 +31,7 @@ hard-coded `modbus.yaml` host.
 - `rack_name`: rack or containment name.
 - `rack_role`: device role within the rack, such as left PDU rail, right PDU rail, or cooling.
 - `rack_position`: free-form rack position notes.
-- `create_dashboard`: store dashboard generation intent with the config entry.
+- `create_dashboard`: create or update a storage-mode Lovelace rack dashboard.
 
 ## Profiles
 

@@ -67,7 +67,9 @@ After the device is added, Home Assistant will create sensors, switches, buttons
 ## Rack Metadata and Dashboards
 
 The setup flow asks for rack name, rack role, rack position, and whether the
-integration should create or update a rack dashboard. The current release stores
-that dashboard intent with the config entry; the generic dashboard generator is
-the next production step. The Rack 02 example dashboard remains available as a
-working pattern in `examples/`.
+integration should create or update a rack dashboard. When enabled, LDCS creates
+or updates a storage-mode Lovelace dashboard named after the rack, for example
+`/ldcs-rack-01/overview`. The generated dashboard uses the currently registered
+LDCS entities, so it may become more complete after the first discovery cycle or
+after adding the second PDU/cooling device for the rack. LDCS also serves and
+registers its bundled visual Lovelace cards under `/ldcs_static/`.

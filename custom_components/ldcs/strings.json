@@ -26,7 +26,7 @@
       },
       "usystems_rdhx": {
         "title": "Add USystems RDHx cooling",
-        "description": "Register a USystems RDHx cooling device for the LDCS rack model. Native Modbus telemetry will be added as the next adapter.",
+        "description": "Connect a USystems RDHx cooling device using Modbus TCP.",
         "data": {
           "host": "Host",
           "modbus_port": "Modbus TCP port",
@@ -40,7 +40,7 @@
       },
       "rack_dashboard": {
         "title": "Create rack/dashboard entry",
-        "description": "Create an LDCS rack entry for dashboard planning. This does not connect to a physical device.",
+        "description": "Create an LDCS rack entry and generated dashboard. This does not connect to a physical device.",
         "data": {
           "rack_name": "Rack name",
           "rack_position": "Rack location or notes"

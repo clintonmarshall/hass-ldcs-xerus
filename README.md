@@ -7,7 +7,7 @@ The integration domain is `ldcs`. Xerus-based rack PDUs are the first supported 
 ## Current Capabilities
 
 - Guided UI setup for Xerus rack PDUs, USystems RDHx cooling, and rack/dashboard entries.
-- Rack metadata capture: rack name, rack role, rack position, and dashboard intent.
+- Rack metadata capture: rack name, rack role, rack position, and generated rack dashboards.
 - Xerus JSON-RPC discovery using the official `raritan` Python SDK.
 - Prometheus-backed telemetry polling where available, with JSON-RPC fallback.
 - MQTT datapush wake-up support for faster refresh after Xerus events.
@@ -33,7 +33,7 @@ This is intended for HACS custom repository installation while it is in beta.
 8. Search for **Legrand Data Center Solutions**.
 9. Choose **Xerus rack PDU**, **USystems RDHx cooling**, or **Rack/dashboard only**.
 
-See [docs/installation.md](docs/installation.md) for manual install and optional dashboard cards.
+See [docs/installation.md](docs/installation.md) for manual install and generated dashboard behavior.
 
 ## Discovery Profiles
 
@@ -43,16 +43,18 @@ See [docs/installation.md](docs/installation.md) for manual install and optional
 
 For large fleets, start with `basic`.
 
-## Optional Lovelace Cards
+## Bundled Lovelace Cards
 
-This repo includes optional local cards in [`www/`](www/):
+This repo includes local visual cards in [`www/`](www/) and bundles copies inside
+the integration package for generated dashboards:
 
 - `raritan-waveform-card.js`
 - `raritan-cooling-card.js`
 - `raritan-rack-visual-card.js`
 - `raritan-outlet-load-card.js`
 
-Copy them to `/config/www/` and register them as Lovelace resources using `/local/<file>.js`.
+When dashboard generation is enabled, LDCS serves them from `/ldcs_static/` and
+registers them as Lovelace module resources.
 
 ## Status
 
@@ -62,7 +64,6 @@ Known beta edges:
 
 - Dashboard examples are environment-specific and should be treated as patterns.
 - Smartlock event history varies by Xerus model/firmware; door and lock state transitions are tracked by polling.
-- Optional frontend cards are manually installed for now.
 - USystems RDHx native Modbus telemetry uses the host, port, and slave ID entered in the setup flow.
 - Starline support is currently a roadmap item, not a native integration setup flow.
 
