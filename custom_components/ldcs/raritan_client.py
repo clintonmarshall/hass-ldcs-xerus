@@ -15,6 +15,11 @@ from raritan.rpc.BulkRequestHelper import perform_bulk
 from raritan.rpc import assetmgrmodel, event, pdumodel, sensors
 
 try:
+    from raritan.rpc import cascading
+except ImportError:
+    cascading = None
+
+try:
     from raritan.rpc import smartcard, smartlock
 except ImportError:
     smartcard = None
@@ -189,6 +194,7 @@ class SensorDescriptor:
     unit_name: str | None = None
     asset_field: str | None = None
     attributes: dict | None = None
+    device_info: dict | None = None
 
 
 class RaritanClient:
@@ -212,6 +218,7 @@ class RaritanClient:
         self.device_identifier = device_identifier
         self.agent = None
         self.pdu = None
+        self.cascade_manager = None
         self.asset_logger = None
         self.alerted_sensor_manager = None
         self.alarm_manager = None
@@ -240,14 +247,23 @@ class RaritanClient:
     @property
     def device_info(self):
         """Return Home Assistant device info."""
-        serial = self.device_identifier or self._metadata.get("serial_number") or self.host
-        name = self._metadata.get("name") or self._metadata.get("model") or f"Xerus device {self.host}"
+        return self._device_info_for_metadata(self._metadata, 0)
+
+    def _device_info_for_metadata(self, metadata, link_id=0):
+        """Return Home Assistant device info for the primary or a linked PDU."""
+        serial = metadata.get("serial_number") or f"{self.host}-link-{link_id}"
+        if link_id in (0, 1):
+            identifier = self.device_identifier or serial or self.host
+            name = metadata.get("name") or metadata.get("model") or f"Xerus device {self.host}"
+        else:
+            identifier = serial or f"{self.device_identifier or self.host}-link-{link_id}"
+            name = metadata.get("name") or metadata.get("model") or f"Linked Xerus PDU {link_id}"
         return {
-            "identifiers": {(DOMAIN, serial)},
-            "manufacturer": self._metadata.get("manufacturer") or "Legrand",
-            "model": self._metadata.get("model"),
+            "identifiers": {(DOMAIN, identifier)},
+            "manufacturer": metadata.get("manufacturer") or "Legrand",
+            "model": metadata.get("model"),
             "name": name,
-            "sw_version": self._metadata.get("fw_revision"),
+            "sw_version": metadata.get("fw_revision"),
             "configuration_url": f"https://{self.host}",
         }
 
@@ -268,6 +284,9 @@ class RaritanClient:
                 timeout=10,
             )
             self.pdu = pdumodel.Pdu("/model/pdu/0", self.agent)
+            self.cascade_manager = (
+                cascading.CascadeManager("/cascade", self.agent) if cascading is not None else None
+            )
             self.asset_logger = assetmgrmodel.AssetStripLogger("/model/assetstriplogger", self.agent)
             self.alerted_sensor_manager = sensors.AlertedSensorManager(
                 "/model/alertedsensormanager", self.agent
@@ -279,7 +298,7 @@ class RaritanClient:
         with self._lock:
             self.connect()
             try:
-                self._metadata = self._read_metadata()
+                self._metadata = self._read_pdu_metadata(self.pdu)
             except Exception as err:  # noqa: BLE001 - SDK raises several exception types.
                 raise RaritanError(f"Unable to connect to Xerus device {self.host}: {err}") from err
             return self._metadata
@@ -289,7 +308,7 @@ class RaritanClient:
         with self._lock:
             self.connect()
             try:
-                self._metadata = self._read_metadata()
+                self._metadata = self._read_pdu_metadata(self.pdu)
                 descriptors = []
                 self._sensors_by_key = {}
                 self._waveform_sources = {}
@@ -297,14 +316,19 @@ class RaritanClient:
                 self._outlet_details = {}
                 self._ocp_details = {}
                 self._poles_by_target = {}
-                self._collect_from_device(descriptors, "PDU", self.pdu)
-                self._collect_children(descriptors, "Inlet", self.pdu.getInlets)
-                self._collect_children(descriptors, "Outlet", self.pdu.getOutlets)
-                self._collect_children(descriptors, "OCP", self.pdu.getOverCurrentProtectors)
-                if self.profile in {"power", "full"}:
-                    self._collect_children(descriptors, "Transfer switch", self.pdu.getTransferSwitches)
-                if self.profile in {"power", "full"} and hasattr(self.pdu, "getPowerMeters"):
-                    self._collect_children(descriptors, "Power meter", self.pdu.getPowerMeters)
+                self._collect_pdu(descriptors, self.pdu, 0, self.device_info)
+                for link_id, link_pdu, link_metadata, link_status in self._linked_pdus():
+                    self._collect_pdu(
+                        descriptors,
+                        link_pdu,
+                        link_id,
+                        self._device_info_for_metadata(link_metadata, link_id),
+                        {
+                            "pdu_link_id": link_id,
+                            "pdu_link_role": "link_unit",
+                            "pdu_link_status": link_status,
+                        },
+                    )
                 self._collect_peripherals(descriptors)
                 self._collect_asset_logger(descriptors)
                 self._collect_asset_inventory(descriptors)
@@ -357,7 +381,11 @@ class RaritanClient:
                 waveform_descriptors.append(descriptor)
                 continue
             sensor = self._sensors_by_key.get(descriptor.key)
-            prometheus_sample = self.prometheus.value_for_descriptor(prometheus_samples, descriptor)
+            prometheus_sample = (
+                self.prometheus.value_for_descriptor(prometheus_samples, descriptor)
+                if _is_primary_descriptor(descriptor)
+                else None
+            )
             if prometheus_sample is not None and not _requires_state_label(descriptor):
                 data[descriptor.key] = {
                     "available": prometheus_sample["available"],
@@ -586,11 +614,12 @@ class RaritanClient:
                     return self.capture_waveform(descriptor.key)
             raise RaritanError(f"{context} does not expose waveform capture on {self.host}")
 
-    def _read_metadata(self):
-        metadata = self.pdu.getMetaData()
+    def _read_pdu_metadata(self, pdu):
+        """Read identifying metadata from a primary or linked PDU proxy."""
+        metadata = pdu.getMetaData()
         nameplate = metadata.nameplate
         try:
-            settings = self.pdu.getSettings()
+            settings = pdu.getSettings()
             configured_name = getattr(settings, "name", "")
         except Exception:  # noqa: BLE001
             configured_name = ""
@@ -603,7 +632,66 @@ class RaritanClient:
             "mac_address": metadata.macAddress,
         }
 
-    def _collect_children(self, descriptors, label, getter):
+    def _linked_pdus(self):
+        """Yield linked PDU proxies exposed by the primary unit."""
+        statuses = self._link_unit_statuses()
+        for link_id in range(2, 9):
+            link_pdu = pdumodel.Pdu(f"/model/pdu/{link_id}", self.agent)
+            try:
+                metadata = self._read_pdu_metadata(link_pdu)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("No linked PDU %s discovered on %s: %s", link_id, self.host, err)
+                continue
+            yield link_id, link_pdu, metadata, statuses.get(link_id)
+
+    def _link_unit_statuses(self):
+        """Return PDU Link status details from the cascade manager when available."""
+        if self.cascade_manager is None:
+            return {}
+        try:
+            status = self.cascade_manager.getStatus()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to read PDU Link status on %s: %s", self.host, err)
+            return {}
+        result = {}
+        for unit in getattr(status, "linkUnits", []) or []:
+            link_id = getattr(unit, "linkId", getattr(unit, "id", None))
+            if link_id is None:
+                continue
+            result[int(link_id)] = _json_safe(unit)
+        return result
+
+    def _collect_pdu(self, descriptors, pdu, pdu_id, device_info, attributes=None):
+        """Collect sensors from one PDU in a primary/link chain."""
+        pdu_attributes = {
+            "pdu_id": pdu_id,
+            "pdu_link_role": "primary" if pdu_id in (0, 1) else "link_unit",
+            **(attributes or {}),
+        }
+        self._collect_from_device(descriptors, "PDU", pdu, pdu_attributes, device_info)
+        self._collect_children(descriptors, "Inlet", pdu.getInlets, pdu_id, device_info, pdu_attributes)
+        self._collect_children(descriptors, "Outlet", pdu.getOutlets, pdu_id, device_info, pdu_attributes)
+        self._collect_children(descriptors, "OCP", pdu.getOverCurrentProtectors, pdu_id, device_info, pdu_attributes)
+        if self.profile in {"power", "full"}:
+            self._collect_children(
+                descriptors,
+                "Transfer switch",
+                pdu.getTransferSwitches,
+                pdu_id,
+                device_info,
+                pdu_attributes,
+            )
+        if self.profile in {"power", "full"} and hasattr(pdu, "getPowerMeters"):
+            self._collect_children(
+                descriptors,
+                "Power meter",
+                pdu.getPowerMeters,
+                pdu_id,
+                device_info,
+                pdu_attributes,
+            )
+
+    def _collect_children(self, descriptors, label, getter, pdu_id=0, device_info=None, base_attributes=None):
         try:
             children = getter()
         except Exception as err:  # noqa: BLE001
@@ -611,21 +699,19 @@ class RaritanClient:
             return
         for index, child in enumerate(children, start=1):
             context = f"{label} {index}"
-            attributes = (
-                {}
-                if label == "Outlet" and index != 1
-                else self._device_attributes(label, index, child)
-            )
-            self._collect_from_device(descriptors, context, child, attributes)
-            self._collect_waveform(descriptors, label, index, child, attributes)
+            attributes = {**(base_attributes or {})}
+            if not (label == "Outlet" and index != 1):
+                attributes.update(self._device_attributes(label, index, child, pdu_id))
+            self._collect_from_device(descriptors, context, child, attributes, device_info)
+            self._collect_waveform(descriptors, label, index, child, attributes, device_info)
 
-    def _collect_from_device(self, descriptors, context, device, attributes=None):
+    def _collect_from_device(self, descriptors, context, device, attributes=None, device_info=None):
         try:
             sensor_struct = device.getSensors()
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Unable to read sensors for %s on %s: %s", context, self.host, err)
             return
-        self._collect_from_struct(descriptors, context, sensor_struct, attributes, device)
+        self._collect_from_struct(descriptors, context, sensor_struct, attributes, device, device_info)
 
         if self.profile == "full" or context.startswith("Inlet "):
             poles = self._device_poles(device)
@@ -633,7 +719,7 @@ class RaritanClient:
                 line_name = _power_line_name(getattr(pole, "line", None))
                 pole_context = f"{context} {line_name}" if line_name else f"{context} Pole {index}"
                 pole_attributes = {**(attributes or {}), "power_line": line_name}
-                self._collect_from_struct(descriptors, pole_context, pole, pole_attributes)
+                self._collect_from_struct(descriptors, pole_context, pole, pole_attributes, None, device_info)
 
     def _collect_peripherals(self, descriptors):
         try:
@@ -1003,12 +1089,12 @@ class RaritanClient:
         self._security_interfaces[cache_key] = None
         return None
 
-    def _collect_from_struct(self, descriptors, context, struct, attributes=None, device=None):
+    def _collect_from_struct(self, descriptors, context, struct, attributes=None, device=None, device_info=None):
         for field in getattr(struct, "elements", []):
             sensor = getattr(struct, field, None)
-            self._add_sensor(descriptors, context, field, sensor, attributes, device)
+            self._add_sensor(descriptors, context, field, sensor, attributes, device, device_info)
 
-    def _add_sensor(self, descriptors, context, field, sensor, attributes=None, device=None):
+    def _add_sensor(self, descriptors, context, field, sensor, attributes=None, device=None, device_info=None):
         if not self._profile_includes(context, field):
             return
 
@@ -1036,13 +1122,14 @@ class RaritanClient:
             type_name=type_name,
             unit_name=unit_name,
             attributes=attributes,
+            device_info=device_info,
         )
         descriptors.append(descriptor)
         self._sensors_by_key[key] = sensor
         if _is_outlet_state_descriptor(descriptor) and device is not None:
             self._outlet_state_devices_by_key[key] = device
 
-    def _device_attributes(self, label, index, device):
+    def _device_attributes(self, label, index, device, pdu_id=0):
         """Return useful settings and protection details for one PDU child."""
         try:
             metadata = device.getMetaData()
@@ -1054,6 +1141,7 @@ class RaritanClient:
             settings = None
 
         attributes = {
+            "pdu_id": pdu_id,
             "device_label": getattr(metadata, "label", None),
             "configured_name": getattr(settings, "name", ""),
         }
@@ -1069,7 +1157,8 @@ class RaritanClient:
         if label == "Outlet":
             attributes.update(self._outlet_protection_attributes(device))
             attributes["waveform_supported"] = bool(getattr(metadata, "hasWaveformSupport", False))
-            self._outlet_details[str(index)] = attributes
+            if pdu_id in (0, 1):
+                self._outlet_details[str(index)] = attributes
         elif label == "Inlet":
             lines = [
                 line
@@ -1123,7 +1212,7 @@ class RaritanClient:
         self._ocp_details[target] = details
         return {**details, "ocp_poles": [_json_enum(getattr(pole, "line", None)) for pole in poles]}
 
-    def _collect_waveform(self, descriptors, label, index, device, attributes):
+    def _collect_waveform(self, descriptors, label, index, device, attributes, device_info=None):
         """Add inlet power-quality and outlet inrush waveform diagnostics."""
         if not attributes.get("waveform_supported"):
             return
@@ -1135,6 +1224,7 @@ class RaritanClient:
                 target=device.target,
                 method=device.getWaveform,
                 attributes=attributes,
+                device_info=device_info,
             )
             if hasattr(device, "getPoleWaveform"):
                 for pole in self._device_poles(device):
@@ -1148,6 +1238,7 @@ class RaritanClient:
                         target=f"{device.target}/{line_name}",
                         method=lambda line=pole.line: device.getPoleWaveform(line),
                         attributes={**attributes, "power_line": line_name},
+                        device_info=device_info,
                     )
             return
         elif label == "Outlet" and index == 1 and hasattr(device, "getInrushWaveform"):
@@ -1162,9 +1253,10 @@ class RaritanClient:
             target=device.target,
             method=method,
             attributes=attributes,
+            device_info=device_info,
         )
 
-    def _add_waveform(self, descriptors, name, context, target, method, attributes):
+    def _add_waveform(self, descriptors, name, context, target, method, attributes, device_info=None):
         """Add one cached waveform diagnostic entity."""
         key = _slug(f"{self.host}_{target}_waveform")
         descriptors.append(
@@ -1176,6 +1268,7 @@ class RaritanClient:
                 kind=SensorKind.WAVEFORM,
                 type_name="WAVEFORM",
                 attributes=attributes,
+                device_info=device_info,
             )
         )
         self._waveform_sources[key] = method
@@ -1302,6 +1395,10 @@ def _is_contact_state_descriptor(descriptor):
 
 def _requires_state_label(descriptor):
     return _is_outlet_state_descriptor(descriptor) or _is_contact_state_descriptor(descriptor)
+
+
+def _is_primary_descriptor(descriptor):
+    return (descriptor.attributes or {}).get("pdu_id", 0) in (0, 1)
 
 
 def _outlet_state_value(state):

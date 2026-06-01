@@ -98,7 +98,7 @@ class RaritanSensor(CoordinatorEntity, SensorEntity):
         self._descriptor = descriptor
         self._attr_unique_id = f"{entry_id}_{descriptor.key}"
         self._attr_translation_key = None
-        self._attr_device_info = client.device_info
+        self._attr_device_info = descriptor.device_info or client.device_info
 
         if descriptor.kind == SensorKind.NUMERIC:
             self._attr_suggested_display_precision = 2
