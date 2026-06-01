@@ -231,6 +231,7 @@ class RaritanClient:
         self._security_state_last = {}
         self._security_events = []
         self._asset_strip = None
+        self._outlet_state_devices_by_key = {}
         self._outlet_details = {}
         self._ocp_details = {}
         self._poles_by_target = {}
@@ -292,6 +293,7 @@ class RaritanClient:
                 descriptors = []
                 self._sensors_by_key = {}
                 self._waveform_sources = {}
+                self._outlet_state_devices_by_key = {}
                 self._outlet_details = {}
                 self._ocp_details = {}
                 self._poles_by_target = {}
@@ -356,7 +358,7 @@ class RaritanClient:
                 continue
             sensor = self._sensors_by_key.get(descriptor.key)
             prometheus_sample = self.prometheus.value_for_descriptor(prometheus_samples, descriptor)
-            if prometheus_sample is not None:
+            if prometheus_sample is not None and not _is_outlet_state_descriptor(descriptor):
                 data[descriptor.key] = {
                     "available": prometheus_sample["available"],
                     "value": prometheus_sample["value"],
@@ -368,7 +370,11 @@ class RaritanClient:
                 continue
             if sensor is None:
                 continue
-            method = sensor.getReading if descriptor.kind == SensorKind.NUMERIC else sensor.getState
+            outlet = self._outlet_state_devices_by_key.get(descriptor.key)
+            if outlet is not None:
+                method = outlet.getState
+            else:
+                method = sensor.getReading if descriptor.kind == SensorKind.NUMERIC else sensor.getState
             sensor_requests.append((method, []))
             sensor_descriptors.append(descriptor)
 
@@ -398,11 +404,14 @@ class RaritanClient:
                     }
                 else:
                     state = response
-                    data[descriptor.key] = {
-                        "available": bool(state.available),
-                        "value": state.value if state.available else None,
-                        "attributes": {"telemetry_source": "json_rpc"},
-                    }
+                    if _is_outlet_state_descriptor(descriptor):
+                        data[descriptor.key] = _outlet_state_value(state)
+                    else:
+                        data[descriptor.key] = {
+                            "available": bool(state.available),
+                            "value": state.value if state.available else None,
+                            "attributes": {"telemetry_source": "json_rpc"},
+                        }
 
         self._refresh_minmax_cache()
         for descriptor in self.sensor_descriptors:
@@ -614,7 +623,7 @@ class RaritanClient:
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Unable to read sensors for %s on %s: %s", context, self.host, err)
             return
-        self._collect_from_struct(descriptors, context, sensor_struct, attributes)
+        self._collect_from_struct(descriptors, context, sensor_struct, attributes, device)
 
         if self.profile == "full" or context.startswith("Inlet "):
             poles = self._device_poles(device)
@@ -992,12 +1001,12 @@ class RaritanClient:
         self._security_interfaces[cache_key] = None
         return None
 
-    def _collect_from_struct(self, descriptors, context, struct, attributes=None):
+    def _collect_from_struct(self, descriptors, context, struct, attributes=None, device=None):
         for field in getattr(struct, "elements", []):
             sensor = getattr(struct, field, None)
-            self._add_sensor(descriptors, context, field, sensor, attributes)
+            self._add_sensor(descriptors, context, field, sensor, attributes, device)
 
-    def _add_sensor(self, descriptors, context, field, sensor, attributes=None):
+    def _add_sensor(self, descriptors, context, field, sensor, attributes=None, device=None):
         if not self._profile_includes(context, field):
             return
 
@@ -1028,6 +1037,8 @@ class RaritanClient:
         )
         descriptors.append(descriptor)
         self._sensors_by_key[key] = sensor
+        if _is_outlet_state_descriptor(descriptor) and device is not None:
+            self._outlet_state_devices_by_key[key] = device
 
     def _device_attributes(self, label, index, device):
         """Return useful settings and protection details for one PDU child."""
@@ -1272,6 +1283,60 @@ def _reading_status_attrs(reading):
         "below_lower_warning": getattr(status, "belowLowerWarning", False),
         "below_lower_critical": getattr(status, "belowLowerCritical", False),
     }
+
+
+def _is_outlet_state_descriptor(descriptor):
+    return descriptor.context.startswith("Outlet ") and descriptor.field == "outletState"
+
+
+def _outlet_state_value(state):
+    """Return a display-friendly outlet state with detailed flags as attributes."""
+    available = bool(getattr(state, "available", True))
+    power_state = getattr(state, "powerState", getattr(state, "value", None))
+    attributes = {
+        "outlet_power_state": _outlet_power_state_label(power_state),
+        "switch_on_in_progress": bool(getattr(state, "switchOnInProgress", False)),
+        "cycle_in_progress": bool(getattr(state, "cycleInProgress", False)),
+        "load_shed": bool(getattr(state, "isLoadShed", False)),
+        "suspended": bool(getattr(state, "isSuspended", False)),
+        "service_mode": bool(getattr(state, "inServiceMode", False)),
+        "has_inrush_waveform": bool(getattr(state, "hasInrushWaveform", False)),
+        "last_power_state_change": _timestamp(getattr(state, "lastPowerStateChange", None)),
+        "telemetry_source": "json_rpc",
+    }
+    if not available:
+        return {"available": False, "value": None, "attributes": attributes}
+    return {
+        "available": True,
+        "value": _outlet_state_label(state),
+        "attributes": attributes,
+    }
+
+
+def _outlet_state_label(state):
+    if getattr(state, "cycleInProgress", False):
+        return "Cycle"
+    if getattr(state, "switchOnInProgress", False):
+        return "Switching On"
+    if getattr(state, "isLoadShed", False):
+        return "Load Shed"
+    if getattr(state, "isSuspended", False):
+        return "Suspended"
+    if getattr(state, "inServiceMode", False):
+        power_label = _outlet_power_state_label(getattr(state, "powerState", getattr(state, "value", None)))
+        return f"Service Mode {power_label}" if power_label else "Service Mode"
+    return _outlet_power_state_label(getattr(state, "powerState", getattr(state, "value", None))) or "Unknown"
+
+
+def _outlet_power_state_label(value):
+    if value is None:
+        return None
+    name = _enum_name(value)
+    if name in {"ps_on", "on", "1", "true"}:
+        return "On"
+    if name in {"ps_off", "off", "0", "false"}:
+        return "Off"
+    return name.replace("_", " ").title() if name else None
 
 
 def _minmax_attrs(minmax):
