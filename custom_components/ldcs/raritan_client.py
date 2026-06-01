@@ -969,16 +969,17 @@ class RaritanClient:
         targets = attrs.get("asset_strip_targets")
         strip = self._asset_strip_interface(pdu_id, targets)
         probe_attrs = self._asset_strip_probe_attrs(pdu_id, targets)
-        recent_records = self._asset_log_recent_records()
+        recent_records = self._asset_log_recent_records(pdu_id)
         if strip is None:
+            asset_tags = _asset_tags_from_log_records(recent_records)
             return {
                 "available": True,
-                "value": 0,
+                "value": len(asset_tags),
                 "attributes": {
-                    "asset_strip_status": "unsupported",
+                    "asset_strip_status": "logger_only" if asset_tags else "unsupported",
                     "pdu_id": pdu_id,
                     "rack_unit_count": 42,
-                    "asset_tags": [],
+                    "asset_tags": asset_tags,
                     **probe_attrs,
                     "asset_log_recent_records": recent_records,
                     "telemetry_source": "json_rpc",
@@ -1015,20 +1016,32 @@ class RaritanClient:
             },
         }
 
-    def _asset_log_recent_records(self, count=20):
+    def _asset_log_recent_records(self, pdu_id=0, count=20):
         """Return recent asset strip logger records for dashboard diagnostics."""
+        logger = self._asset_logger_interface(pdu_id)
         try:
-            info = self.asset_logger.getInfo()
-            newest = getattr(info, "newestRecord", 0) or 0
-            oldest = getattr(info, "oldestRecord", 0) or 0
-            if newest <= 0:
+            info = logger.getInfo()
+            newest = getattr(info, "newestRecord", -1)
+            oldest = getattr(info, "oldestRecord", -1)
+            total = getattr(info, "totalEventCount", 0) or 0
+            capacity = getattr(info, "capacity", count) or count
+            if newest < 0 or oldest < 0 or total <= 0:
                 return []
-            start = max(oldest, newest - count + 1)
-            _next_id, records = self.asset_logger.getRecords(start, count)
+            read_count = min(count, total, capacity)
+            start = newest - read_count + 1
+            if start < 0:
+                start = oldest
+            _next_id, records = logger.getRecords(start, read_count)
         except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Unable to read recent asset strip records on %s: %s", self.host, err)
+            _LOGGER.debug("Unable to read recent asset strip records for PDU %s on %s: %s", pdu_id, self.host, err)
             return []
         return [_asset_log_record_attrs(record) for record in records]
+
+    def _asset_logger_interface(self, pdu_id=0):
+        """Return the primary or linked PDU asset strip logger."""
+        if pdu_id in (0, 1):
+            return self.asset_logger
+        return assetmgrmodel.AssetStripLogger(f"/link/{pdu_id}/model/assetstriplogger", self.agent)
 
     def _asset_strip_interface(self, pdu_id=0, targets=None):
         """Return the first asset strip target that responds."""
@@ -1908,6 +1921,37 @@ def _asset_log_record_attrs(record):
         "parent_blade_id": getattr(record, "parentBladeId", None),
         "state": _enum_name(getattr(record, "state", None)),
     }
+
+
+def _asset_tags_from_log_records(records):
+    """Derive current tag occupancy from asset logger connect/disconnect records."""
+    tags = {}
+    for record in records:
+        tag_id = record.get("tag_id")
+        if not tag_id:
+            continue
+        event_type = record.get("type")
+        if event_type == "asset_tag_disconnected":
+            tags.pop(tag_id, None)
+            continue
+        if event_type != "asset_tag_connected":
+            continue
+        rack_unit_number = record.get("rack_unit_number")
+        tags[tag_id] = {
+            "tag_id": tag_id,
+            "raw_id": tag_id,
+            "name": tag_id,
+            "configured_name": tag_id,
+            "rack_unit_number": rack_unit_number,
+            "ru": (rack_unit_number or 0) + 1 if rack_unit_number is not None and rack_unit_number >= 0 else None,
+            "rack_unit_position": record.get("rack_unit_position"),
+            "slot_number": record.get("slot_number"),
+            "asset_strip_number": record.get("asset_strip_number"),
+            "parent_blade_id": record.get("parent_blade_id"),
+            "last_seen_at": record.get("timestamp"),
+            "source": "asset_strip_logger",
+        }
+    return list(tags.values())
 
 
 def _security_event_label(type_name, current):
