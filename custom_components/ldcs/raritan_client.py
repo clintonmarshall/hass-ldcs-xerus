@@ -435,7 +435,9 @@ class RaritanClient:
                     if _is_outlet_state_descriptor(descriptor):
                         data[descriptor.key] = _outlet_state_value(state)
                     elif _is_contact_state_descriptor(descriptor):
-                        data[descriptor.key] = _contact_state_value(state)
+                        data[descriptor.key] = _binary_state_value(state, "contact")
+                    elif _is_ocp_trip_descriptor(descriptor):
+                        data[descriptor.key] = _ocp_trip_state_value(state)
                     else:
                         data[descriptor.key] = {
                             "available": bool(state.available),
@@ -1393,8 +1395,16 @@ def _is_contact_state_descriptor(descriptor):
     }
 
 
+def _is_ocp_trip_descriptor(descriptor):
+    return descriptor.context.startswith("OCP ") and descriptor.field == "trip"
+
+
 def _requires_state_label(descriptor):
-    return _is_outlet_state_descriptor(descriptor) or _is_contact_state_descriptor(descriptor)
+    return (
+        _is_outlet_state_descriptor(descriptor)
+        or _is_contact_state_descriptor(descriptor)
+        or _is_ocp_trip_descriptor(descriptor)
+    )
 
 
 def _is_primary_descriptor(descriptor):
@@ -1451,24 +1461,33 @@ def _outlet_power_state_label(value):
     return name.replace("_", " ").title() if name else None
 
 
-def _contact_state_value(state):
-    """Return a display-friendly dry contact state."""
+def _binary_state_value(state, source):
+    """Return a display-friendly binary state."""
     available = bool(getattr(state, "available", True))
     raw_value = getattr(state, "value", None)
     if not available:
         return {
             "available": False,
             "value": None,
-            "attributes": {"raw_state": _json_safe(raw_value), "telemetry_source": "json_rpc"},
+            "attributes": {"raw_state": _json_safe(raw_value), "state_source": source, "telemetry_source": "json_rpc"},
         }
     return {
         "available": True,
-        "value": _contact_state_label(raw_value),
-        "attributes": {"raw_state": _json_safe(raw_value), "telemetry_source": "json_rpc"},
+        "value": _binary_state_label(raw_value),
+        "attributes": {"raw_state": _json_safe(raw_value), "state_source": source, "telemetry_source": "json_rpc"},
     }
 
 
-def _contact_state_label(value):
+def _ocp_trip_state_value(state):
+    value = _binary_state_value(state, "ocp_trip")
+    if value["value"] == "On":
+        value["value"] = "Tripped"
+    elif value["value"] == "Off":
+        value["value"] = "Normal"
+    return value
+
+
+def _binary_state_label(value):
     if value is None:
         return "Unknown"
     if isinstance(value, bool):
