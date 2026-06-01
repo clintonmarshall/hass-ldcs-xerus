@@ -358,7 +358,7 @@ class RaritanClient:
                 continue
             sensor = self._sensors_by_key.get(descriptor.key)
             prometheus_sample = self.prometheus.value_for_descriptor(prometheus_samples, descriptor)
-            if prometheus_sample is not None and not _is_outlet_state_descriptor(descriptor):
+            if prometheus_sample is not None and not _requires_state_label(descriptor):
                 data[descriptor.key] = {
                     "available": prometheus_sample["available"],
                     "value": prometheus_sample["value"],
@@ -406,6 +406,8 @@ class RaritanClient:
                     state = response
                     if _is_outlet_state_descriptor(descriptor):
                         data[descriptor.key] = _outlet_state_value(state)
+                    elif _is_contact_state_descriptor(descriptor):
+                        data[descriptor.key] = _contact_state_value(state)
                     else:
                         data[descriptor.key] = {
                             "available": bool(state.available),
@@ -1289,6 +1291,19 @@ def _is_outlet_state_descriptor(descriptor):
     return descriptor.context.startswith("Outlet ") and descriptor.field == "outletState"
 
 
+def _is_contact_state_descriptor(descriptor):
+    return descriptor.type_name in {
+        "CONTACT_CLOSURE",
+        "DRY_CONTACT",
+        "ON_OFF_SENSOR",
+        "POWERED_DRY_CONTACT",
+    }
+
+
+def _requires_state_label(descriptor):
+    return _is_outlet_state_descriptor(descriptor) or _is_contact_state_descriptor(descriptor)
+
+
 def _outlet_state_value(state):
     """Return a display-friendly outlet state with detailed flags as attributes."""
     available = bool(getattr(state, "available", True))
@@ -1337,6 +1352,38 @@ def _outlet_power_state_label(value):
     if name in {"ps_off", "off", "0", "false"}:
         return "Off"
     return name.replace("_", " ").title() if name else None
+
+
+def _contact_state_value(state):
+    """Return a display-friendly dry contact state."""
+    available = bool(getattr(state, "available", True))
+    raw_value = getattr(state, "value", None)
+    if not available:
+        return {
+            "available": False,
+            "value": None,
+            "attributes": {"raw_state": _json_safe(raw_value), "telemetry_source": "json_rpc"},
+        }
+    return {
+        "available": True,
+        "value": _contact_state_label(raw_value),
+        "attributes": {"raw_state": _json_safe(raw_value), "telemetry_source": "json_rpc"},
+    }
+
+
+def _contact_state_label(value):
+    if value is None:
+        return "Unknown"
+    if isinstance(value, bool):
+        return "On" if value else "Off"
+    if isinstance(value, (int, float)):
+        return "On" if value else "Off"
+    name = _enum_name(value)
+    if name in {"on", "closed", "close", "active", "1", "true"}:
+        return "On"
+    if name in {"off", "open", "inactive", "0", "false"}:
+        return "Off"
+    return name.replace("_", " ").title() if name else "Unknown"
 
 
 def _minmax_attrs(minmax):
