@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import logging
 import re
+from threading import RLock
 from time import monotonic
 
 from raritan import rpc
@@ -214,6 +215,7 @@ class RaritanClient:
         self.alarm_manager = None
         self.prometheus = PrometheusCollector(host, username, password, verify_ssl)
         self.redfish = RedfishClient(host, username, password, verify_ssl)
+        self._lock = RLock()
         self.sensor_descriptors: list[SensorDescriptor] = []
         self._descriptors_by_key: dict[str, SensorDescriptor] = {}
         self._sensors_by_key = {}
@@ -271,45 +273,52 @@ class RaritanClient:
 
     def test_connection(self):
         """Test login and return simple metadata."""
-        self.connect()
-        try:
-            self._metadata = self._read_metadata()
-        except Exception as err:  # noqa: BLE001 - SDK raises several exception types.
-            raise RaritanError(f"Unable to connect to Raritan device {self.host}: {err}") from err
-        return self._metadata
+        with self._lock:
+            self.connect()
+            try:
+                self._metadata = self._read_metadata()
+            except Exception as err:  # noqa: BLE001 - SDK raises several exception types.
+                raise RaritanError(f"Unable to connect to Xerus device {self.host}: {err}") from err
+            return self._metadata
 
     def discover(self):
         """Discover sensors exposed by the PDU."""
-        self.connect()
-        try:
-            self._metadata = self._read_metadata()
-            descriptors = []
-            self._sensors_by_key = {}
-            self._waveform_sources = {}
-            self._outlet_details = {}
-            self._ocp_details = {}
-            self._poles_by_target = {}
-            self._collect_from_device(descriptors, "PDU", self.pdu)
-            self._collect_children(descriptors, "Inlet", self.pdu.getInlets)
-            self._collect_children(descriptors, "Outlet", self.pdu.getOutlets)
-            self._collect_children(descriptors, "OCP", self.pdu.getOverCurrentProtectors)
-            if self.profile in {"power", "full"}:
-                self._collect_children(descriptors, "Transfer switch", self.pdu.getTransferSwitches)
-            if self.profile in {"power", "full"} and hasattr(self.pdu, "getPowerMeters"):
-                self._collect_children(descriptors, "Power meter", self.pdu.getPowerMeters)
-            self._collect_peripherals(descriptors)
-            self._collect_asset_logger(descriptors)
-            self._collect_asset_inventory(descriptors)
-            self._collect_alarm_summary(descriptors)
-            self._collect_security_summary(descriptors)
-            self.sensor_descriptors = descriptors
-            self._descriptors_by_key = {descriptor.key: descriptor for descriptor in descriptors}
-            self._last_discovery = monotonic()
-        except Exception as err:  # noqa: BLE001
-            raise RaritanError(f"Unable to discover sensors on {self.host}: {err}") from err
+        with self._lock:
+            self.connect()
+            try:
+                self._metadata = self._read_metadata()
+                descriptors = []
+                self._sensors_by_key = {}
+                self._waveform_sources = {}
+                self._outlet_details = {}
+                self._ocp_details = {}
+                self._poles_by_target = {}
+                self._collect_from_device(descriptors, "PDU", self.pdu)
+                self._collect_children(descriptors, "Inlet", self.pdu.getInlets)
+                self._collect_children(descriptors, "Outlet", self.pdu.getOutlets)
+                self._collect_children(descriptors, "OCP", self.pdu.getOverCurrentProtectors)
+                if self.profile in {"power", "full"}:
+                    self._collect_children(descriptors, "Transfer switch", self.pdu.getTransferSwitches)
+                if self.profile in {"power", "full"} and hasattr(self.pdu, "getPowerMeters"):
+                    self._collect_children(descriptors, "Power meter", self.pdu.getPowerMeters)
+                self._collect_peripherals(descriptors)
+                self._collect_asset_logger(descriptors)
+                self._collect_asset_inventory(descriptors)
+                self._collect_alarm_summary(descriptors)
+                self._collect_security_summary(descriptors)
+                self.sensor_descriptors = descriptors
+                self._descriptors_by_key = {descriptor.key: descriptor for descriptor in descriptors}
+                self._last_discovery = monotonic()
+            except Exception as err:  # noqa: BLE001
+                raise RaritanError(f"Unable to discover sensors on {self.host}: {err}") from err
 
     def update(self):
         """Read all discovered sensor values."""
+        with self._lock:
+            return self._update_locked()
+
+    def _update_locked(self):
+        """Read all discovered sensor values while holding the client lock."""
         if not self.sensor_descriptors or monotonic() - self._last_discovery >= METADATA_REFRESH_INTERVAL:
             self.discover()
 
@@ -472,6 +481,11 @@ class RaritanClient:
 
     def reset_all_minmax(self):
         """Reset PDU-maintained minimum and maximum readings for all numeric sensors."""
+        with self._lock:
+            return self._reset_all_minmax_locked()
+
+    def _reset_all_minmax_locked(self):
+        """Reset PDU-maintained extrema while holding the client lock."""
         if not self.sensor_descriptors:
             self.discover()
 
@@ -510,15 +524,17 @@ class RaritanClient:
 
     def discover_redfish_outlets(self):
         """Discover outlets that Redfish allows Home Assistant to switch."""
-        try:
-            return self.redfish.discover_outlets()
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Unable to discover Redfish outlets on %s: %s", self.host, err)
-            return []
+        with self._lock:
+            try:
+                return self.redfish.discover_outlets()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Unable to discover Redfish outlets on %s: %s", self.host, err)
+                return []
 
     def set_redfish_outlet_power(self, target, state):
         """Set outlet power using Redfish."""
-        self.redfish.set_outlet_power(target, state)
+        with self._lock:
+            self.redfish.set_outlet_power(target, state)
 
     def outlet_state_key(self, outlet_id):
         """Return coordinator key for a Redfish outlet state."""
@@ -530,29 +546,32 @@ class RaritanClient:
 
     def capture_waveform(self, key):
         """Acquire and cache a fresh waveform for one diagnostic entity."""
-        method = self._waveform_sources[key]
-        self._waveform_cache[key] = self._waveform_value(method())
-        return self._waveform_cache[key]
+        with self._lock:
+            method = self._waveform_sources[key]
+            self._waveform_cache[key] = self._waveform_value(method())
+            return self._waveform_cache[key]
 
     def capture_inlet_waveform(self, inlet_number=1):
         """Acquire and cache a fresh waveform for a one-based inlet."""
-        if not self.sensor_descriptors:
-            self.discover()
-        context = f"Inlet {inlet_number}"
-        for descriptor in self.sensor_descriptors:
-            if descriptor.kind == SensorKind.WAVEFORM and descriptor.context == context:
-                return self.capture_waveform(descriptor.key)
-        raise RaritanError(f"{context} does not expose waveform capture on {self.host}")
+        with self._lock:
+            if not self.sensor_descriptors:
+                self.discover()
+            context = f"Inlet {inlet_number}"
+            for descriptor in self.sensor_descriptors:
+                if descriptor.kind == SensorKind.WAVEFORM and descriptor.context == context:
+                    return self.capture_waveform(descriptor.key)
+            raise RaritanError(f"{context} does not expose waveform capture on {self.host}")
 
     def capture_inlet_pole_waveform(self, line_name, inlet_number=1):
         """Acquire and cache a fresh waveform for one inlet phase."""
-        if not self.sensor_descriptors:
-            self.discover()
-        context = f"Inlet {inlet_number} {line_name.upper()}"
-        for descriptor in self.sensor_descriptors:
-            if descriptor.kind == SensorKind.WAVEFORM and descriptor.context == context:
-                return self.capture_waveform(descriptor.key)
-        raise RaritanError(f"{context} does not expose waveform capture on {self.host}")
+        with self._lock:
+            if not self.sensor_descriptors:
+                self.discover()
+            context = f"Inlet {inlet_number} {line_name.upper()}"
+            for descriptor in self.sensor_descriptors:
+                if descriptor.kind == SensorKind.WAVEFORM and descriptor.context == context:
+                    return self.capture_waveform(descriptor.key)
+            raise RaritanError(f"{context} does not expose waveform capture on {self.host}")
 
     def _read_metadata(self):
         metadata = self.pdu.getMetaData()
