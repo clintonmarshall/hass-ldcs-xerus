@@ -90,7 +90,6 @@ class RaritanSensor(CoordinatorEntity, SensorEntity):
     """Representation of a Xerus sensor."""
 
     _attr_has_entity_name = True
-    _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator, client, entry_id, descriptor):
         """Initialize the sensor."""
@@ -102,6 +101,7 @@ class RaritanSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_info = client.device_info
 
         if descriptor.kind == SensorKind.NUMERIC:
+            self._attr_suggested_display_precision = 2
             self._attr_native_unit_of_measurement = UNIT_MAP.get(descriptor.unit_name)
             self._attr_device_class = _device_class(descriptor)
             self._attr_state_class = SensorStateClass.MEASUREMENT
