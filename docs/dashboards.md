@@ -26,4 +26,6 @@ They expect entity IDs to be passed in the card configuration.
 
 ## Future Dashboard Generator
 
-The current `tools/generate_rack02_dashboard.py` script is Rack 02-specific. The next production step is a generic dashboard generator that reads Home Assistant entity registry/device metadata and asks for rack placement.
+`tools/generate_current_rack_dashboard.py` builds the active single-rack dashboard from the Home Assistant entity registry. It is intended for the current POC rack where one primary Xerus PDU exposes a linked PDU plus optional USystems RDHx telemetry.
+
+`tools/generate_rack02_dashboard.py` remains as a historical Rack 02-specific reference.

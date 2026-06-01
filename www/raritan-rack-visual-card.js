@@ -27,22 +27,33 @@ class RaritanRackVisualCard extends HTMLElement {
     const alarmB = state(e.alarmB);
     const alarm = ["critical", "warning"].includes(alarmA) || ["critical", "warning"].includes(alarmB);
     const critical = alarmA === "critical" || alarmB === "critical";
-    const assetAttrs = attrs(e.assetInventory);
-    const tags = assetAttrs.asset_tags || [];
-    const ruCount = Number(assetAttrs.rack_unit_count) || 42;
+    const assetInventoryIds = e.assetInventories || [e.assetInventory, e.assetInventoryB].filter(Boolean);
+    const assetInventories = assetInventoryIds.map((id) => attrs(id));
+    const tags = assetInventories.flatMap((assetAttrs, stripIndex) =>
+      (assetAttrs.asset_tags || []).map((tag) => ({ ...tag, stripIndex: stripIndex + 1 }))
+    );
+    const rackUnits = assetInventories.flatMap((assetAttrs, stripIndex) =>
+      (assetAttrs.asset_rack_units || []).map((unit) => ({ ...unit, stripIndex: stripIndex + 1 }))
+    );
+    const recentAssetRecords = assetInventories.flatMap((assetAttrs) => assetAttrs.asset_log_recent_records || []);
+    const ruCount = Number(assetInventories.find((assetAttrs) => assetAttrs.rack_unit_count)?.rack_unit_count) || 42;
     const tagByRu = new Map(tags.map((tag) => [Number(tag.ru || tag.rack_unit_number + 1), tag]));
     const rows = [];
     for (let ru = ruCount; ru >= 1; ru -= 1) {
       const tag = tagByRu.get(ru);
+      const rackUnit = rackUnits.find((unit) => Number(unit.ru || unit.rack_unit_number + 1) === ru);
+      const occupied = tag || (rackUnit && Number(rackUnit.size) > 0);
+      const tagLabel = tag ? tag.raw_id || tag.tag_id || tag.name || `TAG-${ru}` : "";
       rows.push(`
-        <div class="ru ${tag ? "occupied" : ""}" title="${tag ? `RU ${ru}: ${tag.raw_id || "asset tag"}` : `RU ${ru}`}">
+        <div class="ru ${occupied ? "occupied" : ""}" title="${tag ? `RU ${ru}: ${tagLabel}` : `RU ${ru}`}">
           <span>${ru}</span>
-          <b>${tag ? escapeHtml(tag.raw_id || `TAG-${ru}`) : ""}</b>
+          <b>${tag ? escapeHtml(tagLabel) : ""}</b>
         </div>
       `);
     }
     const recentEvents = attrs(e.securityStatus).recent_access_events || [];
     const lastEvent = recentEvents[0];
+    const lastAsset = recentAssetRecords[0];
 
     this.shadowRoot.innerHTML = `
       <ha-card>
@@ -94,7 +105,7 @@ class RaritanRackVisualCard extends HTMLElement {
           }
           .beacon:after { content:""; position:absolute; inset:24px; border-radius:999px; background:rgba(255,255,255,.28); }
           @keyframes pulse { 0%,100%{opacity:.55; transform:scale(.96)} 50%{opacity:1; transform:scale(1.04)} }
-          .events { font-size:12px; color:var(--secondary-text-color); line-height:1.45; }
+          .events { font-size:12px; color:var(--secondary-text-color); line-height:1.45; display:grid; gap:12px; }
           .events strong { color:var(--primary-text-color); display:block; font-size:14px; margin-bottom:4px; }
           .metrics { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin-top:14px; }
           .metric { border:1px solid rgba(148,163,184,.22); border-radius:8px; padding:10px; background:rgba(255,255,255,.04); }
@@ -121,8 +132,14 @@ class RaritanRackVisualCard extends HTMLElement {
                 <div class="beacon"></div>
               </div>
               <div class="events">
-                <strong>Last rack access</strong>
-                ${lastEvent ? `${lastEvent.event || "state changed"}<br>${lastEvent.context || ""}<br>${lastEvent.timestamp || ""}` : "No door/lock transition recorded since integration start."}
+                <div>
+                  <strong>Last rack access</strong>
+                  ${lastEvent ? `${lastEvent.event || "state changed"}<br>${lastEvent.context || ""}<br>${lastEvent.timestamp || ""}` : "No door/lock transition recorded since integration start."}
+                </div>
+                <div>
+                  <strong>Last asset event</strong>
+                  ${lastAsset ? `${lastAsset.type || "asset event"}<br>RU ${lastAsset.ru || "-"} ${lastAsset.tag_id || ""}<br>${lastAsset.timestamp || ""}` : "No asset strip event records available yet."}
+                </div>
               </div>
             </div>
           </div>

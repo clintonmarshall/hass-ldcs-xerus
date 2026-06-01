@@ -13,3 +13,4 @@ known_hosts*
 *.local
 *.secret
 secrets.*
+vendor/raritan-sdk/
