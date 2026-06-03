@@ -39,7 +39,7 @@ async def async_install_rack_dashboard(hass: HomeAssistant, entry: ConfigEntry) 
     await Store(
         hass,
         DASHBOARD_STORAGE_VERSION,
-        f"lovelace.{url_path}",
+        f"lovelace.{dashboard_id}",
         minor_version=DASHBOARD_STORAGE_MINOR_VERSION,
     ).async_save({"config": config})
 
