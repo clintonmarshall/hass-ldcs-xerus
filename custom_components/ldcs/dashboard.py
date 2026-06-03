@@ -32,7 +32,7 @@ async def async_install_rack_dashboard(hass: HomeAssistant, entry: ConfigEntry) 
     rack_name = entry.data.get(CONF_RACK_NAME) or entry.options.get(CONF_RACK_NAME) or "LDCS Rack"
     url_path = f"ldcs-{_slug(rack_name)}"
     dashboard_id = url_path.replace("-", "_")
-    entity_ids = _ldcs_entity_ids(hass)
+    entity_ids = _ldcs_entity_ids_for_rack(hass, rack_name)
     config = _build_dashboard_config(rack_name, entity_ids)
 
     await _async_install_resources(hass)
@@ -129,11 +129,32 @@ async def _async_install_resources(hass: HomeAssistant) -> None:
 
 def _ldcs_entity_ids(hass: HomeAssistant) -> list[str]:
     """Return enabled entity IDs owned by this integration."""
+    return _entity_ids_for_config_entries(hass, None)
+
+
+def _ldcs_entity_ids_for_rack(hass: HomeAssistant, rack_name: str) -> list[str]:
+    """Return enabled entity IDs owned by LDCS config entries in one rack."""
+    rack_entry_ids = {
+        entry.entry_id
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if (entry.data.get(CONF_RACK_NAME) or entry.options.get(CONF_RACK_NAME)) == rack_name
+    }
+    return _entity_ids_for_config_entries(hass, rack_entry_ids)
+
+
+def _entity_ids_for_config_entries(
+    hass: HomeAssistant,
+    config_entry_ids: set[str] | None,
+) -> list[str]:
+    """Return enabled LDCS entity IDs for all entries or a selected entry set."""
     registry = er.async_get(hass)
     entities = []
     for item in registry.entities.values():
-        if item.platform == DOMAIN and item.disabled_by is None:
-            entities.append(item.entity_id)
+        if item.platform != DOMAIN or item.disabled_by is not None:
+            continue
+        if config_entry_ids is not None and item.config_entry_id not in config_entry_ids:
+            continue
+        entities.append(item.entity_id)
     return sorted(entities, key=_natural_sort_key)
 
 
