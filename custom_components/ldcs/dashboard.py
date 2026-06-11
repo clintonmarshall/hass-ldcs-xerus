@@ -308,9 +308,9 @@ def _build_dashboard_config(
                 "path": "overview",
                 "icon": "mdi:server-rack",
                 "type": "sections",
-                "max_columns": 3,
+                "max_columns": 4,
                 "sections": [
-                    _section([_heading("Operations Health", "mdi:server-network"), protocol_health], 3),
+                    _section([_heading("Operations Health", "mdi:server-network"), protocol_health], 4),
                     _section([_heading("Rack Visual", "mdi:server-rack"), visual], 2),
                     _section(
                         [
@@ -378,7 +378,7 @@ def _build_dashboard_config(
                     _section(
                         [
                             _heading("Outlet Snapshot", "mdi:power-socket-au"),
-                            *_outlet_control_cards(outlet_entities, frontend_features, _slug(rack_name))[:6],
+                            *_outlet_control_cards(outlet_entities, frontend_features, _slug(rack_name))[:8],
                             _navigation_card(
                                 "All outlets",
                                 "mdi:power-strip",
@@ -395,7 +395,7 @@ def _build_dashboard_config(
                 "path": "power",
                 "icon": "mdi:flash",
                 "type": "sections",
-                "max_columns": 3,
+                "max_columns": 4,
                 "sections": [
                     _section(
                         [
@@ -418,17 +418,6 @@ def _build_dashboard_config(
                                         260,
                                     ),
                                 ],
-                                frontend_features,
-                            ),
-                            _sensor_history_expander(
-                                "Inlet electrical detail",
-                                "mdi:chart-line",
-                                (
-                                    inlet_power_entities
-                                    + inlet_current_entities
-                                    + inlet_voltage_entities
-                                    + inlet_frequency_entities
-                                )[:12],
                                 frontend_features,
                             ),
                             _history(
@@ -458,8 +447,15 @@ def _build_dashboard_config(
                         [
                             _heading("Min/Max", "mdi:chart-bell-curve"),
                             _entities_card("Recorded extrema", minmax_entities[:18]),
+                        ],
+                        2,
+                    ),
+                    _section(
+                        [
+                            _heading("Power Quality", "mdi:sine-wave"),
                             _entities_card("Power quality waveform", waveform_buttons + _matching(power_entities, "waveform")[:8]),
-                        ]
+                        ],
+                        2,
                     ),
                 ],
             },
@@ -476,7 +472,7 @@ def _build_dashboard_config(
                 "path": "outlet-history",
                 "icon": "mdi:chart-line",
                 "type": "sections",
-                "max_columns": 3,
+                "max_columns": 4,
                 "sections": _outlet_history_sections(outlet_entities),
             },
             {
@@ -484,7 +480,7 @@ def _build_dashboard_config(
                 "path": "environment",
                 "icon": "mdi:thermometer-water",
                 "type": "sections",
-                "max_columns": 3,
+                "max_columns": 4,
                 "sections": [
                     _section([_heading("Cooling Visual", "mdi:fan"), cooling_visual], 2),
                     _section(
@@ -492,12 +488,6 @@ def _build_dashboard_config(
                             _heading("Temperature", "mdi:thermometer"),
                             *_gauge_cards(
                                 [(entity_id, f"Temp {index + 1}", 60) for index, entity_id in enumerate(temperature_entities[:4])],
-                                frontend_features,
-                            ),
-                            _sensor_history_expander(
-                                "Temperature detail",
-                                "mdi:thermometer-lines",
-                                temperature_entities[:12],
                                 frontend_features,
                             ),
                             _history(
@@ -513,13 +503,12 @@ def _build_dashboard_config(
                                 [(entity_id, f"Humidity {index + 1}", 100) for index, entity_id in enumerate(humidity_entities[:4])],
                                 frontend_features,
                             ),
-                            _sensor_history_expander(
-                                "Humidity and airflow detail",
-                                "mdi:water-percent",
-                                (humidity_entities + environment_entities)[:18],
-                                frontend_features,
+                            _history(
+                                "Humidity and airflow history",
+                                (humidity_entities + environment_entities)[:8],
                             ),
-                        ]
+                        ],
+                        2,
                     ),
                 ],
             },
@@ -528,7 +517,7 @@ def _build_dashboard_config(
                 "path": "security-assets",
                 "icon": "mdi:shield-lock",
                 "type": "sections",
-                "max_columns": 3,
+                "max_columns": 4,
                 "sections": [
                     _section([_heading("Rack Visual", "mdi:server-security"), visual], 2),
                     _section(
@@ -544,7 +533,8 @@ def _build_dashboard_config(
                         [
                             _heading("Asset Strip", "mdi:tag-multiple"),
                             _entities_card("Assets", asset_entities[:30]),
-                        ]
+                        ],
+                        2,
                     ),
                 ],
             },
@@ -553,7 +543,7 @@ def _build_dashboard_config(
                 "path": "events",
                 "icon": "mdi:alarm-light",
                 "type": "sections",
-                "max_columns": 3,
+                "max_columns": 4,
                 "sections": [
                     _section(
                         [
@@ -561,7 +551,8 @@ def _build_dashboard_config(
                             _status_card(_first(event_entities, "alarm"), "Rack alarm beacon", "mdi:alarm-light", frontend_features),
                             _status_card(_first(event_entities, "breach"), "Threshold breach", "mdi:alert-circle", frontend_features),
                             _entities_card("Alarms and thresholds", event_entities[:24]),
-                        ]
+                        ],
+                        2,
                     ),
                     _section(
                         [
@@ -570,7 +561,8 @@ def _build_dashboard_config(
                                 "Contacts",
                                 _matching(event_entities, "contact")[:24],
                             ),
-                        ]
+                        ],
+                        2,
                     ),
                     _section(
                         [
@@ -580,7 +572,8 @@ def _build_dashboard_config(
                                 waveform_buttons
                                 + _matching(power_entities, "waveform")[:12],
                             ),
-                        ]
+                        ],
+                        2,
                     ),
                 ],
             },
@@ -605,17 +598,17 @@ def _outlet_sections(
     outlet_current_entities = _matching(outlet_entities, "current")
     outlet_state_entities = _matching(outlet_entities, "state", "power")
     sections = []
-    for index in range(0, min(len(outlet_cards), 48), 12):
+    for index in range(0, min(len(outlet_cards), 48), 6):
         sections.append(
             _section(
                 [
                     _heading(
-                        f"Outlets {index + 1}-{min(index + 12, len(outlet_cards))}",
+                        f"Outlets {index + 1}-{min(index + 6, len(outlet_cards))}",
                         "mdi:power-strip",
                     ),
-                    *outlet_cards[index : index + 12],
+                    *outlet_cards[index : index + 6],
                 ],
-                2 if index == 0 else 1,
+                2,
             )
         )
     sections.append(
@@ -630,6 +623,7 @@ def _outlet_sections(
                 ),
                 _entities_card("Outlet states", outlet_state_entities[:12]),
             ],
+            2,
         )
     )
     return sections
@@ -678,7 +672,8 @@ def _outlet_history_sections(outlet_entities: list[str]) -> list[dict]:
                     [
                         _heading(f"Outlet {number}", "mdi:power-socket-au"),
                         _history(f"Outlet {number}", history_entities),
-                    ]
+                    ],
+                    2,
                 )
             )
     return sections
