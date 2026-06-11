@@ -20,6 +20,7 @@ DASHBOARDS_STORAGE_KEY = "lovelace_dashboards"
 RESOURCES_STORAGE_KEY = "lovelace_resources"
 RESOURCE_URL_PREFIX = "/ldcs_static"
 LDCS_RESOURCES = (
+    ("ldcs_protocol_health_card", f"{RESOURCE_URL_PREFIX}/ldcs-protocol-health-card.js"),
     ("ldcs_raritan_rack_visual_card", f"{RESOURCE_URL_PREFIX}/raritan-rack-visual-card.js"),
     ("ldcs_raritan_cooling_card", f"{RESOURCE_URL_PREFIX}/raritan-cooling-card.js"),
     ("ldcs_raritan_waveform_card", f"{RESOURCE_URL_PREFIX}/raritan-waveform-card.js"),
@@ -200,6 +201,24 @@ def _build_dashboard_config(rack_name: str, entities: list[str]) -> dict:
         "contact",
     )
     waveform_buttons = _matching(entities, "capture_power_quality_waveform")
+    telemetry_samples = _matching(
+        power_entities + environment_entities,
+        "active_power",
+        "current",
+        "voltage",
+        "temperature",
+        "humidity",
+    )[:12]
+    protocol_health = {
+        "type": "custom:ldcs-protocol-health-card",
+        "title": f"{rack_name} protocol health",
+        "entities": {
+            "telemetrySamples": telemetry_samples,
+            "redfishOutlet": _first(outlet_entities, "redfish") or _first(outlet_entities, "outlet_state"),
+            "modbusLayout": _first(entities, "xerus_modbus_tcp_layout"),
+            "mqttTopic": "raritan/#",
+        },
+    }
     minmax_entities = _matching(
         entities,
         "minimum",
@@ -257,6 +276,7 @@ def _build_dashboard_config(rack_name: str, entities: list[str]) -> dict:
                 "type": "sections",
                 "max_columns": 3,
                 "sections": [
+                    _section([_heading("Operations Health", "mdi:server-network"), protocol_health], 3),
                     _section([_heading("Rack Visual", "mdi:server-rack"), visual], 2),
                     _section(
                         [

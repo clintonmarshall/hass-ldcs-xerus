@@ -49,6 +49,7 @@ For large fleets, start with `basic`.
 This repo includes local visual cards in [`www/`](www/) and bundles copies inside
 the integration package for generated dashboards:
 
+- `ldcs-protocol-health-card.js`
 - `raritan-waveform-card.js`
 - `raritan-cooling-card.js`
 - `raritan-rack-visual-card.js`

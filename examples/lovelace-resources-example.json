@@ -20,6 +20,11 @@
         "type": "module"
       },
       {
+        "id": "ldcs_protocol_health_card",
+        "url": "/local/ldcs-protocol-health-card.js?v=1",
+        "type": "module"
+      },
+      {
         "id": "ldcs_waveform_card",
         "url": "/local/raritan-waveform-card.js?v=1",
         "type": "module"
