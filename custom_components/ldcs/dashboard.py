@@ -103,6 +103,7 @@ async def _async_frontend_features(hass: HomeAssistant) -> dict[str, bool]:
         urls = [str(item.get("url", "")).lower() for item in resources.get("items", [])]
     return {
         "bubble_card": any("bubble-card" in url for url in urls),
+        "expander_card": any("expander-card" in url for url in urls),
         "gauge_card_pro": any("gauge-card-pro" in url for url in urls),
     }
 
@@ -404,6 +405,17 @@ def _build_dashboard_config(
                                 ],
                                 frontend_features,
                             ),
+                            _sensor_history_expander(
+                                "Inlet electrical detail",
+                                "mdi:chart-line",
+                                (
+                                    inlet_power_entities
+                                    + inlet_current_entities
+                                    + inlet_voltage_entities
+                                    + inlet_frequency_entities
+                                )[:12],
+                                frontend_features,
+                            ),
                             _history(
                                 "Power history",
                                 active_power_entities[:8],
@@ -459,6 +471,12 @@ def _build_dashboard_config(
                                 [(entity_id, f"Temp {index + 1}", 60) for index, entity_id in enumerate(temperature_entities[:4])],
                                 frontend_features,
                             ),
+                            _sensor_history_expander(
+                                "Temperature detail",
+                                "mdi:thermometer-lines",
+                                temperature_entities[:12],
+                                frontend_features,
+                            ),
                             _history(
                                 "Temperature history",
                                 temperature_entities[:8],
@@ -472,7 +490,12 @@ def _build_dashboard_config(
                                 [(entity_id, f"Humidity {index + 1}", 100) for index, entity_id in enumerate(humidity_entities[:4])],
                                 frontend_features,
                             ),
-                            _entities_card("Environment detail", environment_entities[:18]),
+                            _sensor_history_expander(
+                                "Humidity and airflow detail",
+                                "mdi:water-percent",
+                                (humidity_entities + environment_entities)[:18],
+                                frontend_features,
+                            ),
                         ]
                     ),
                 ],
@@ -759,36 +782,120 @@ def _outlet_control_cards(
         primary_entity = switch_entity or state_entity or power_entity or current_entity
         if primary_entity is None:
             continue
-        if frontend_features.get("bubble_card"):
-            sub_buttons = [
-                {
-                    "entity": entity_id,
-                    "show_state": True,
-                    "show_name": False,
-                    "icon": icon,
-                }
-                for entity_id, icon in (
-                    (power_entity, "mdi:flash"),
-                    (current_entity, "mdi:current-ac"),
-                )
-                if entity_id
-            ]
-            cards.append(
-                {
-                    "type": "custom:bubble-card",
-                    "card_type": "button",
-                    "button_type": "switch" if primary_entity.startswith("switch.") else "state",
-                    "entity": primary_entity,
-                    "name": f"Outlet {number}",
-                    "icon": "mdi:power-socket-au",
-                    "show_state": True,
-                    "card_layout": "large",
-                    "sub_button": sub_buttons,
-                }
+        detail_entities = [
+            entity_id
+            for entity_id in outlet_entities
+            if _outlet_number(entity_id) == number
+        ]
+        title_card = _outlet_title_card(
+            number,
+            primary_entity,
+            power_entity,
+            current_entity,
+            frontend_features,
+        )
+        detail_cards = [
+            _history(
+                f"Outlet {number} history",
+                [entity_id for entity_id in (power_entity, current_entity) if entity_id],
+            ),
+            _entities_card(f"Outlet {number} values", detail_entities[:16]),
+        ]
+        cards.append(
+            _expander_card(
+                title=f"Outlet {number}",
+                title_card=title_card,
+                cards=detail_cards,
+                frontend_features=frontend_features,
             )
-        else:
-            cards.append(_entity_tile(primary_entity, f"Outlet {number}", "mdi:power-socket-au"))
+        )
     return [card for card in cards if card]
+
+
+def _outlet_title_card(
+    number: int,
+    primary_entity: str,
+    power_entity: str | None,
+    current_entity: str | None,
+    frontend_features: dict[str, bool],
+) -> dict:
+    if frontend_features.get("bubble_card"):
+        sub_buttons = [
+            {
+                "entity": entity_id,
+                "show_state": True,
+                "show_name": False,
+                "icon": icon,
+            }
+            for entity_id, icon in (
+                (power_entity, "mdi:flash"),
+                (current_entity, "mdi:current-ac"),
+            )
+            if entity_id
+        ]
+        return {
+            "type": "custom:bubble-card",
+            "card_type": "button",
+            "button_type": "switch" if primary_entity.startswith("switch.") else "state",
+            "entity": primary_entity,
+            "name": f"Outlet {number}",
+            "icon": "mdi:power-socket-au",
+            "show_state": True,
+            "card_layout": "large",
+            "sub_button": sub_buttons,
+        }
+    return {
+        "type": "tile",
+        "entity": primary_entity,
+        "name": f"Outlet {number}",
+        "icon": "mdi:power-socket-au",
+    }
+
+
+def _sensor_history_expander(
+    title: str,
+    icon: str,
+    entity_ids: list[str],
+    frontend_features: dict[str, bool],
+) -> dict | None:
+    if not entity_ids:
+        return None
+    title_card = {"type": "heading", "heading": title, "heading_style": "subtitle", "icon": icon}
+    return _expander_card(
+        title=title,
+        title_card=title_card,
+        cards=[
+            _history(f"{title} history", entity_ids[:8]),
+            _entities_card(title, entity_ids[:18]),
+        ],
+        frontend_features=frontend_features,
+    )
+
+
+def _expander_card(
+    *,
+    title: str,
+    title_card: dict | None,
+    cards: list[dict | None],
+    frontend_features: dict[str, bool],
+) -> dict | None:
+    child_cards = [card for card in cards if card]
+    if title_card is None or not child_cards:
+        return title_card
+    if frontend_features.get("expander_card"):
+        return {
+            "type": "custom:expander-card",
+            "title": title,
+            "title-card": title_card,
+            "title-card-clickable": True,
+            "title-card-button-overlay": True,
+            "child-margin-top": "0.6em",
+            "padding": 0,
+            "clear": True,
+            "expanded": False,
+            "cards": child_cards,
+        }
+    return {"type": "vertical-stack", "cards": [title_card, *child_cards]}
 
 
 def _outlet_number(entity_id: str) -> int | None:
