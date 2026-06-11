@@ -375,6 +375,19 @@ def _build_dashboard_config(
                             _entities_card("Active alarms and breaches", event_entities[:8]),
                         ]
                     ),
+                    _section(
+                        [
+                            _heading("Outlet Snapshot", "mdi:power-socket-au"),
+                            *_outlet_control_cards(outlet_entities, frontend_features, _slug(rack_name))[:6],
+                            _navigation_card(
+                                "All outlets",
+                                "mdi:power-strip",
+                                "/ldcs-" + _slug(rack_name) + "/outlets",
+                                frontend_features,
+                            ),
+                        ],
+                        3,
+                    ),
                 ],
             },
             {
