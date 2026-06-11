@@ -106,6 +106,7 @@ async def _async_frontend_features(hass: HomeAssistant) -> dict[str, bool]:
         # Keep expander disabled until the frontend resource is verified in-browser.
         "expander_card": False,
         "gauge_card_pro": any("gauge-card-pro" in url for url in urls),
+        "mushroom": any("lovelace-mushroom" in url or "mushroom.js" in url for url in urls),
     }
 
 
@@ -455,7 +456,15 @@ def _build_dashboard_config(
                 "icon": "mdi:power-socket-au",
                 "type": "sections",
                 "max_columns": 4,
-                "sections": _outlet_sections(outlet_entities, frontend_features),
+                "sections": _outlet_sections(outlet_entities, frontend_features, _slug(rack_name)),
+            },
+            {
+                "title": "Outlet History",
+                "path": "outlet-history",
+                "icon": "mdi:chart-line",
+                "type": "sections",
+                "max_columns": 3,
+                "sections": _outlet_history_sections(outlet_entities),
             },
             {
                 "title": "Environment",
@@ -569,6 +578,7 @@ def _build_dashboard_config(
 def _outlet_sections(
     outlet_entities: list[str],
     frontend_features: dict[str, bool],
+    dashboard_slug: str,
 ) -> list[dict]:
     """Build outlet sections split into manageable blocks."""
     if not outlet_entities:
@@ -577,7 +587,7 @@ def _outlet_sections(
                 [_heading("Outlets", "mdi:power-strip"), _entities_card("Outlet states", [])]
             )
         ]
-    outlet_cards = _outlet_control_cards(outlet_entities, frontend_features)
+    outlet_cards = _outlet_control_cards(outlet_entities, frontend_features, dashboard_slug)
     outlet_power_entities = _matching(outlet_entities, "active_power")
     outlet_current_entities = _matching(outlet_entities, "current")
     outlet_state_entities = _matching(outlet_entities, "state", "power")
@@ -599,23 +609,65 @@ def _outlet_sections(
         _section(
             [
                 _heading("Outlet Trends", "mdi:chart-line"),
-                _sensor_history_expander(
-                    "Outlet power trends",
+                _navigation_card(
+                    "Open outlet history",
                     "mdi:chart-line",
-                    outlet_power_entities[:12],
-                    frontend_features,
-                ),
-                _sensor_history_expander(
-                    "Outlet current trends",
-                    "mdi:current-ac",
-                    outlet_current_entities[:12],
+                    f"/ldcs-{dashboard_slug}/outlet-history",
                     frontend_features,
                 ),
                 _entities_card("Outlet states", outlet_state_entities[:12]),
             ],
-            2,
         )
     )
+    return sections
+
+
+def _outlet_history_sections(outlet_entities: list[str]) -> list[dict]:
+    """Build dedicated outlet history sections."""
+    outlet_power_entities = _matching(outlet_entities, "active_power")
+    outlet_current_entities = _matching(outlet_entities, "current")
+    sections = [
+        _section(
+            [
+                _heading("Outlet Power", "mdi:flash"),
+                _history("Outlet power history", outlet_power_entities[:12]),
+            ],
+            2,
+        ),
+        _section(
+            [
+                _heading("Outlet Current", "mdi:current-ac"),
+                _history("Outlet current history", outlet_current_entities[:12]),
+            ],
+            2,
+        ),
+    ]
+    outlet_numbers = sorted(
+        {
+            number
+            for entity_id in outlet_entities
+            if (number := _outlet_number(entity_id)) is not None
+        }
+    )
+    for number in outlet_numbers[:24]:
+        history_entities = [
+            entity_id
+            for entity_id in (
+                _first(outlet_entities, f"outlet_{number}", "active_power"),
+                _first(outlet_entities, f"outlet_{number}", "current"),
+                _first(outlet_entities, f"outlet_{number}", "voltage"),
+            )
+            if entity_id
+        ]
+        if history_entities:
+            sections.append(
+                _section(
+                    [
+                        _heading(f"Outlet {number}", "mdi:power-socket-au"),
+                        _history(f"Outlet {number}", history_entities),
+                    ]
+                )
+            )
     return sections
 
 
@@ -767,6 +819,7 @@ def _navigation_card(
 def _outlet_control_cards(
     outlet_entities: list[str],
     frontend_features: dict[str, bool],
+    dashboard_slug: str,
 ) -> list[dict]:
     outlet_numbers = sorted(
         {
@@ -803,21 +856,9 @@ def _outlet_control_cards(
             power_entity,
             current_entity,
             frontend_features,
+            dashboard_slug,
         )
-        detail_cards = [
-            _history(
-                f"Outlet {number} history",
-                [entity_id for entity_id in (power_entity, current_entity) if entity_id],
-            )
-        ]
-        cards.append(
-            _expander_card(
-                title=f"Outlet {number}",
-                title_card=title_card,
-                cards=detail_cards,
-                frontend_features=frontend_features,
-            )
-        )
+        cards.append(title_card)
     return [card for card in cards if card]
 
 
@@ -827,7 +868,23 @@ def _outlet_title_card(
     power_entity: str | None,
     current_entity: str | None,
     frontend_features: dict[str, bool],
+    dashboard_slug: str,
 ) -> dict:
+    navigation_path = f"/ldcs-{dashboard_slug}/outlet-history"
+    if frontend_features.get("mushroom"):
+        return {
+            "type": "custom:mushroom-template-card",
+            "primary": f"Outlet {number}",
+            "secondary": _mushroom_outlet_secondary(power_entity, current_entity),
+            "icon": "mdi:power-socket-au",
+            "entity": primary_entity,
+            "icon_color": _mushroom_outlet_icon_color(primary_entity),
+            "layout": "horizontal",
+            "fill_container": True,
+            "multiline_secondary": True,
+            "tap_action": {"action": "navigate", "navigation_path": navigation_path},
+            "hold_action": {"action": "more-info"},
+        }
     if frontend_features.get("bubble_card"):
         sub_buttons = [
             {
@@ -852,12 +909,21 @@ def _outlet_title_card(
             "show_state": True,
             "card_layout": "large",
             "sub_button": sub_buttons,
+            "button_action": {
+                "tap_action": {
+                    "action": "navigate",
+                    "navigation_path": navigation_path,
+                },
+                "hold_action": {"action": "more-info"},
+            },
         }
     return {
         "type": "tile",
         "entity": primary_entity,
         "name": f"Outlet {number}",
         "icon": "mdi:power-socket-au",
+        "tap_action": {"action": "navigate", "navigation_path": navigation_path},
+        "hold_action": {"action": "more-info"},
     }
 
 
@@ -901,6 +967,37 @@ def _expander_card(
             "cards": child_cards,
         }
     return {"type": "vertical-stack", "cards": [title_card, *child_cards]}
+
+
+def _mushroom_outlet_secondary(
+    power_entity: str | None,
+    current_entity: str | None,
+) -> str:
+    values = []
+    if power_entity:
+        values.append(_mushroom_state_with_unit(power_entity, "Power"))
+    if current_entity:
+        values.append(_mushroom_state_with_unit(current_entity, "Current"))
+    return " | ".join(values) if values else "Tap for history"
+
+
+def _mushroom_state_with_unit(entity_id: str, label: str) -> str:
+    return (
+        f"{label}: {{{{ states('{entity_id}') }}}} "
+        f"{{{{ state_attr('{entity_id}', 'unit_of_measurement') or '' }}}}"
+    )
+
+
+def _mushroom_outlet_icon_color(entity_id: str) -> str:
+    return (
+        "{% if is_state('" + entity_id + "', 'on') %}"
+        "green"
+        "{% elif is_state('" + entity_id + "', 'off') %}"
+        "red"
+        "{% else %}"
+        "blue"
+        "{% endif %}"
+    )
 
 
 def _outlet_number(entity_id: str) -> int | None:
