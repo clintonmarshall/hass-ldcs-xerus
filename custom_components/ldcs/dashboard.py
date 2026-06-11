@@ -103,7 +103,8 @@ async def _async_frontend_features(hass: HomeAssistant) -> dict[str, bool]:
         urls = [str(item.get("url", "")).lower() for item in resources.get("items", [])]
     return {
         "bubble_card": any("bubble-card" in url for url in urls),
-        "expander_card": any("expander-card" in url for url in urls),
+        # Keep expander disabled until the frontend resource is verified in-browser.
+        "expander_card": False,
         "gauge_card_pro": any("gauge-card-pro" in url for url in urls),
     }
 
