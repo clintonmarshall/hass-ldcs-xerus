@@ -297,4 +297,6 @@ class RaritanCoolingCard extends HTMLElement {
   }
 }
 
-customElements.define("raritan-cooling-card", RaritanCoolingCard);
+if (!customElements.get("raritan-cooling-card")) {
+  customElements.define("raritan-cooling-card", RaritanCoolingCard);
+}

@@ -18,11 +18,13 @@ class RaritanRackVisualCard extends HTMLElement {
     const e = this.config.entities || {};
     const state = (id) => (id && this._hass.states[id] ? this._hass.states[id].state : "unknown");
     const attrs = (id) => (id && this._hass.states[id] ? this._hass.states[id].attributes || {} : {});
-    const doorStates = [e.frontDoor, e.rearDoor, e.frontDoorB, e.rearDoorB].map(state);
-    const open = doorStates.some((value) => String(value).toLowerCase().includes("open"));
-    const unlocked = [e.frontLock, e.rearLock, e.frontLockB, e.rearLockB]
-      .map(state)
-      .some((value) => String(value).toLowerCase().includes("unlock"));
+    const frontDoor = doorState(state(e.frontDoor));
+    const rearDoor = doorState(state(e.rearDoor));
+    const frontLock = lockState(state(e.frontLock));
+    const rearLock = lockState(state(e.rearLock));
+    const doorStates = [frontDoor.label, rearDoor.label].filter(Boolean);
+    const open = frontDoor.open || rearDoor.open;
+    const unlocked = frontLock.unlocked || rearLock.unlocked;
     const alarmA = state(e.alarmA);
     const alarmB = state(e.alarmB);
     const alarm = ["critical", "warning"].includes(alarmA) || ["critical", "warning"].includes(alarmB);
@@ -54,6 +56,14 @@ class RaritanRackVisualCard extends HTMLElement {
     const recentEvents = attrs(e.securityStatus).recent_access_events || [];
     const lastEvent = recentEvents[0];
     const lastAsset = recentAssetRecords[0];
+    const outletStates = (e.outletStates || []).map(state);
+    const ocpStates = (e.ocpStates || []).map(state);
+    const rackPower = (e.rackPower || []).reduce((total, id) => {
+      const value = Number.parseFloat(state(id));
+      return total + (Number.isFinite(value) ? value : 0);
+    }, 0);
+    const ocpTripped = ocpStates.some((value) => String(value).toLowerCase().includes("trip"));
+    const outletsOn = outletStates.filter((value) => String(value).toLowerCase().includes("on")).length;
 
     this.shadowRoot.innerHTML = `
       <ha-card>
@@ -62,6 +72,9 @@ class RaritanRackVisualCard extends HTMLElement {
           .top { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:14px; }
           .title { font-size:20px; font-weight:700; }
           .subtitle { color:var(--secondary-text-color); font-size:13px; margin-top:4px; }
+          .scanner { height:12px; border-radius:999px; background:rgba(15,23,42,.72); overflow:hidden; margin-bottom:16px; border:1px solid rgba(148,163,184,.28); position:relative; }
+          .scanner:before { content:""; position:absolute; inset:0 auto 0 0; width:30%; border-radius:999px; background:linear-gradient(90deg, transparent, ${alarm ? "#ef4444" : "#22c55e"}, transparent); animation:scan 1.35s linear infinite; }
+          @keyframes scan { 0%{ transform:translateX(-100%); } 100%{ transform:translateX(340%); } }
           .stage { display:grid; grid-template-columns: 1fr 1.25fr 1fr; gap:14px; align-items:stretch; }
           .panel {
             border:1px solid rgba(148,163,184,.28);
@@ -82,19 +95,21 @@ class RaritanRackVisualCard extends HTMLElement {
           .ru span { color:#94a3b8; font-size:9px; text-align:center; }
           .ru b { color:#dbeafe; font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:650; }
           .ru.occupied { background:linear-gradient(90deg, rgba(34,197,94,.58), rgba(14,165,233,.28)); border-color:rgba(34,197,94,.75); box-shadow:0 0 8px rgba(34,197,94,.18); }
-          .doorPanel { display:grid; place-items:center; background:linear-gradient(180deg, rgba(15,23,42,.04), rgba(14,165,233,.06)); }
-          .doorFrame { width:76%; height:72%; border:10px solid rgba(71,85,105,.88); border-radius:10px; perspective:700px; position:relative; background:rgba(15,23,42,.08); }
+          .doorPanel { display:grid; grid-template-rows:1fr 1fr; gap:12px; padding:14px; background:linear-gradient(180deg, rgba(15,23,42,.04), rgba(14,165,233,.06)); }
+          .doorCard { border:1px solid rgba(148,163,184,.24); border-radius:10px; padding:12px; position:relative; overflow:hidden; background:linear-gradient(180deg, rgba(15,23,42,.14), rgba(15,23,42,.04)); }
+          .doorCard.open { border-color:rgba(245,158,11,.72); background:linear-gradient(180deg, rgba(245,158,11,.16), rgba(15,23,42,.05)); }
+          .doorCard.closed { border-color:rgba(34,197,94,.55); background:linear-gradient(180deg, rgba(34,197,94,.10), rgba(15,23,42,.04)); }
+          .doorLabel { display:flex; justify-content:space-between; gap:8px; align-items:center; color:var(--primary-text-color); font-size:13px; font-weight:800; text-transform:uppercase; margin-bottom:10px; }
+          .doorLabel span:last-child { color:var(--secondary-text-color); font-size:12px; }
+          .doorFrame { width:72%; height:112px; margin:0 auto; border:8px solid rgba(71,85,105,.88); border-radius:10px; perspective:700px; position:relative; background:rgba(15,23,42,.08); }
           .door {
             position:absolute; inset:0; transform-origin:left center; border-radius:4px;
-            background:linear-gradient(135deg, rgba(51,65,85,.95), rgba(100,116,139,.82));
+            background:linear-gradient(135deg, var(--door-a), var(--door-b));
             border:2px solid rgba(226,232,240,.22);
             transition:transform .5s ease;
-            transform:${open ? "rotateY(-58deg)" : "rotateY(0deg)"};
+            transform:var(--door-transform);
           }
-          .handle { position:absolute; right:16px; top:50%; width:12px; height:48px; border-radius:999px; background:${unlocked ? "#f59e0b" : "#22c55e"}; box-shadow:0 0 16px ${unlocked ? "#f59e0b" : "#22c55e"}; transform:translateY(-50%); }
-          .statePill { position:absolute; left:14px; bottom:14px; right:14px; border-radius:8px; padding:12px; background:rgba(15,23,42,.72); color:white; }
-          .statePill strong { display:block; font-size:18px; }
-          .statePill span { display:block; color:#cbd5e1; font-size:12px; margin-top:4px; }
+          .handle { position:absolute; right:16px; top:50%; width:12px; height:48px; border-radius:999px; background:var(--lock-c); box-shadow:0 0 16px var(--lock-c); transform:translateY(-50%); }
           .beaconPanel { padding:18px; display:flex; flex-direction:column; justify-content:space-between; }
           .beacon {
             width:124px; height:124px; margin:20px auto; border-radius:999px;
@@ -107,6 +122,9 @@ class RaritanRackVisualCard extends HTMLElement {
           @keyframes pulse { 0%,100%{opacity:.55; transform:scale(.96)} 50%{opacity:1; transform:scale(1.04)} }
           .events { font-size:12px; color:var(--secondary-text-color); line-height:1.45; display:grid; gap:12px; }
           .events strong { color:var(--primary-text-color); display:block; font-size:14px; margin-bottom:4px; }
+          .lights { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-bottom:14px; }
+          .light { border:1px solid rgba(148,163,184,.22); border-radius:8px; padding:8px; font-size:11px; text-transform:uppercase; font-weight:800; display:flex; align-items:center; gap:7px; }
+          .light i { width:10px; height:10px; border-radius:999px; background:var(--c); box-shadow:0 0 12px var(--c); }
           .metrics { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin-top:14px; }
           .metric { border:1px solid rgba(148,163,184,.22); border-radius:8px; padding:10px; background:rgba(255,255,255,.04); }
           .metric span { display:block; color:var(--secondary-text-color); font-size:11px; text-transform:uppercase; font-weight:700; }
@@ -115,12 +133,13 @@ class RaritanRackVisualCard extends HTMLElement {
         </style>
         <div class="wrap">
           <div class="top">
-            <div><div class="title">${this.config.title || "Rack Security Visual"}</div><div class="subtitle">Door state, active alarms, and 42RU asset occupancy</div></div>
+            <div><div class="title">${this.config.title || "Rack Security Visual"}</div><div class="subtitle">Door state, active alarms, and ${ruCount}RU asset occupancy</div></div>
           </div>
+          <div class="scanner"></div>
           <div class="stage">
             <div class="panel doorPanel">
-              <div class="doorFrame"><div class="door"><div class="handle"></div></div></div>
-              <div class="statePill"><strong>${open ? "Door Open" : unlocked ? "Unlocked" : "Door Secured"}</strong><span>${doorStates.join(" | ")}</span></div>
+              ${doorCard("Front Door", frontDoor, frontLock)}
+              ${doorCard("Rear Door", rearDoor, rearLock)}
             </div>
             <div class="panel rack">
               <div class="rackHead"><span>Asset strip</span><span>${tags.length}/${ruCount} occupied</span></div>
@@ -129,6 +148,14 @@ class RaritanRackVisualCard extends HTMLElement {
             <div class="panel beaconPanel">
               <div>
                 <div class="rackHead" style="color:var(--primary-text-color)"><span>Alarm Beacon</span><span>${alarm ? (critical ? "Critical" : "Warning") : "Normal"}</span></div>
+                <div class="lights">
+                  <div class="light"><i style="--c:${open ? "#f59e0b" : "#22c55e"}"></i>Door</div>
+                  <div class="light"><i style="--c:${unlocked ? "#f59e0b" : "#22c55e"}"></i>Lock</div>
+                  <div class="light"><i style="--c:${alarm ? "#ef4444" : "#22c55e"}"></i>Alarm</div>
+                  <div class="light"><i style="--c:${ocpTripped ? "#ef4444" : "#22c55e"}"></i>OCP</div>
+                  <div class="light"><i style="--c:${outletsOn ? "#38bdf8" : "#94a3b8"}"></i>Outlet</div>
+                  <div class="light"><i style="--c:${rackPower > 0 ? "#f59e0b" : "#94a3b8"}"></i>Load</div>
+                </div>
                 <div class="beacon"></div>
               </div>
               <div class="events">
@@ -147,11 +174,51 @@ class RaritanRackVisualCard extends HTMLElement {
             <div class="metric"><span>PDU A alarms</span><b>${alarmA}</b></div>
             <div class="metric"><span>PDU B alarms</span><b>${alarmB}</b></div>
             <div class="metric"><span>Assets detected</span><b>${tags.length}</b></div>
+            <div class="metric"><span>Outlets on</span><b>${outletsOn}/${outletStates.length}</b></div>
+            <div class="metric"><span>OCP state</span><b>${ocpTripped ? "Trip" : "Normal"}</b></div>
+            <div class="metric"><span>Rack power</span><b>${formatWatts(rackPower)}</b></div>
           </div>
         </div>
       </ha-card>
     `;
   }
+}
+
+function doorCard(label, door, lock) {
+  const stateClass = door.open ? "open" : "closed";
+  const doorA = door.open ? "rgba(245,158,11,.96)" : "rgba(51,65,85,.95)";
+  const doorB = door.open ? "rgba(180,83,9,.82)" : "rgba(100,116,139,.82)";
+  const lockColor = lock.unlocked ? "#f59e0b" : "#22c55e";
+  const transform = door.open ? "rotateY(-58deg)" : "rotateY(0deg)";
+  return `
+    <div class="doorCard ${stateClass}">
+      <div class="doorLabel"><span>${escapeHtml(label)}</span><span>${escapeHtml(door.label)} / ${escapeHtml(lock.label)}</span></div>
+      <div class="doorFrame">
+        <div class="door" style="--door-a:${doorA};--door-b:${doorB};--door-transform:${transform};">
+          <div class="handle" style="--lock-c:${lockColor}"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function doorState(value) {
+  const raw = String(value ?? "unknown").toLowerCase();
+  const open = raw === "0" || raw === "false" || raw.includes("open") || raw.includes("unlock");
+  const closed = raw === "1" || raw === "true" || raw.includes("closed") || raw.includes("locked");
+  return { open, label: open ? "Open" : closed ? "Closed" : "Unknown" };
+}
+
+function lockState(value) {
+  const raw = String(value ?? "unknown").toLowerCase();
+  const unlocked = raw === "0" || raw === "false" || raw.includes("unlock") || raw.includes("open");
+  const locked = raw === "1" || raw === "true" || raw.includes("locked") || raw.includes("closed");
+  return { unlocked, label: unlocked ? "Unlocked" : locked ? "Locked" : "Unknown" };
+}
+
+function formatWatts(value) {
+  if (!Number.isFinite(value) || value <= 0) return "--";
+  return value >= 1000 ? `${(value / 1000).toFixed(1)} kW` : `${value.toFixed(0)} W`;
 }
 
 function escapeHtml(value) {

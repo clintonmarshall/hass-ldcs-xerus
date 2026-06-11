@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from enum import Enum
 import logging
 import re
+import socket
 from threading import RLock
 from time import monotonic
 
+import requests
 from raritan import rpc
 from raritan.rpc.BulkRequestHelper import perform_bulk
 from raritan.rpc import assetmgrmodel, event, pdumodel, sensors
@@ -30,6 +32,13 @@ except ImportError:
     smartcard = None
     smartlock = None
 
+try:
+    from raritan.rpc import devsettings, net, security
+except ImportError:
+    devsettings = None
+    net = None
+    security = None
+
 from .prometheus import PrometheusCollector
 from .redfish import RedfishClient
 from .xerus_modbus import XerusModbusClient
@@ -41,6 +50,7 @@ BULK_CHUNK_SIZE = 100
 METADATA_REFRESH_INTERVAL = 300
 MINMAX_REFRESH_INTERVAL = 300
 WAVEFORM_REFRESH_INTERVAL = 300
+SERVICE_STATUS_REFRESH_INTERVAL = 300
 
 BASIC_FIELDS = {
     "activeEnergy",
@@ -185,6 +195,8 @@ class SensorKind(Enum):
     SECURITY = "security"
     WAVEFORM = "waveform"
     INVENTORY = "inventory"
+    SERVICE_STATUS = "service_status"
+    CONFIG_SNAPSHOT = "config_snapshot"
 
 
 @dataclass(frozen=True)
@@ -217,6 +229,10 @@ class RaritanClient:
         device_identifier: str | None = None,
         modbus_port: int = DEFAULT_MODBUS_PORT,
         modbus_slave_id: int = DEFAULT_MODBUS_SLAVE_ID,
+        rack_name: str | None = None,
+        rack_role: str | None = None,
+        rack_position: str | None = None,
+        mqtt_datapush_config: dict | None = None,
     ):
         """Initialize the client."""
         self.host = host
@@ -225,6 +241,10 @@ class RaritanClient:
         self.verify_ssl = verify_ssl
         self.profile = profile
         self.device_identifier = device_identifier
+        self.rack_name = rack_name
+        self.rack_role = rack_role
+        self.rack_position = rack_position
+        self.mqtt_datapush_config = mqtt_datapush_config or {}
         self.agent = None
         self.pdu = None
         self.cascade_manager = None
@@ -239,6 +259,7 @@ class RaritanClient:
         self.sensor_descriptors: list[SensorDescriptor] = []
         self._descriptors_by_key: dict[str, SensorDescriptor] = {}
         self._sensors_by_key = {}
+        self._controllable_state_switches = {}
         self._metadata = {}
         self._waveform_sources = {}
         self._waveform_cache = {}
@@ -248,6 +269,14 @@ class RaritanClient:
         self._security_interfaces = {}
         self._security_state_last = {}
         self._security_events = []
+        self._mqtt_events = []
+        self._mqtt_event_count = 0
+        self._mqtt_datapush_status = {"enabled": bool(self.mqtt_datapush_config.get("enabled"))}
+        self._service_status_cache = None
+        self._last_service_status_refresh = 0.0
+        self._config_snapshot_cache = None
+        self._last_config_snapshot_refresh = 0.0
+        self._link_statuses = {}
         self._asset_strips = {}
         self._asset_strip_selected_targets = {}
         self._asset_strip_probe_errors = {}
@@ -263,6 +292,22 @@ class RaritanClient:
         """Return Home Assistant device info."""
         return self._device_info_for_metadata(self._metadata, 0)
 
+    @property
+    def rack_device_info(self):
+        """Return Home Assistant device info for the rack/PDU Link parent."""
+        rack_name = self.rack_name or self._metadata.get("name") or f"Rack {self.host}"
+        master_name = self._metadata.get("name") or self.host
+        model = "LDCS Rack"
+        if self._link_statuses:
+            model = f"PDU Link Master: {master_name}"
+        return {
+            "identifiers": {(DOMAIN, self._rack_device_identifier())},
+            "manufacturer": "Legrand Data Center Solutions",
+            "model": model,
+            "name": rack_name,
+            "configuration_url": f"https://{self.host}",
+        }
+
     def _device_info_for_metadata(self, metadata, link_id=0):
         """Return Home Assistant device info for the primary or a linked PDU."""
         serial = metadata.get("serial_number") or f"{self.host}-link-{link_id}"
@@ -272,7 +317,7 @@ class RaritanClient:
         else:
             identifier = serial or f"{self.device_identifier or self.host}-link-{link_id}"
             name = metadata.get("name") or metadata.get("model") or f"Linked Xerus PDU {link_id}"
-        return {
+        device_info = {
             "identifiers": {(DOMAIN, identifier)},
             "manufacturer": metadata.get("manufacturer") or "Legrand",
             "model": metadata.get("model"),
@@ -280,11 +325,136 @@ class RaritanClient:
             "sw_version": metadata.get("fw_revision"),
             "configuration_url": f"https://{self.host}",
         }
+        if self._has_rack_parent():
+            device_info["via_device"] = (DOMAIN, self._rack_device_identifier())
+        return device_info
+
+    def _rack_device_identifier(self):
+        """Return the stable identifier for the rack parent device."""
+        rack_key = self.rack_name or self.device_identifier or self.host
+        return f"rack_{_slug(rack_key)}"
+
+    def _has_rack_parent(self):
+        """Return true when entities should be grouped under a rack parent."""
+        return bool(self.rack_name) or bool(self._link_statuses)
+
+    def _rack_or_device_info(self):
+        """Return rack device info when a rack parent is available."""
+        return self.rack_device_info if self._has_rack_parent() else self.device_info
 
     @property
     def mqtt_topic(self):
         """Return the dedicated MQTT topic wildcard for this PDU."""
+        prefix = _mqtt_topic_prefix(self.mqtt_datapush_config.get("topic_prefix"))
+        if not prefix and self.mqtt_datapush_enabled:
+            prefix = self._default_mqtt_topic_prefix()
+        if prefix:
+            return f"{prefix}#"
         return f"raritan/{_slug(self.host)}/#"
+
+    @property
+    def mqtt_datapush_enabled(self):
+        """Return whether the integration should manage Xerus MQTT Data Push."""
+        return bool(self.mqtt_datapush_config.get("enabled") and self.mqtt_datapush_config.get("host"))
+
+    def note_mqtt_message(self, topic, payload):
+        """Track a recent MQTT Data Push message and wake-up trigger."""
+        with self._lock:
+            self._mqtt_event_count += 1
+            event_record = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "topic": topic,
+                "payload_type": type(payload).__name__,
+                "summary": _mqtt_payload_summary(payload),
+            }
+            self._mqtt_events.insert(0, event_record)
+            self._mqtt_events = self._mqtt_events[:40]
+            self._mqtt_datapush_status = {
+                **self._mqtt_datapush_status,
+                "enabled": bool(self.mqtt_datapush_config.get("enabled")),
+                "last_message_time": event_record["timestamp"],
+                "last_topic": topic,
+                "message_count": self._mqtt_event_count,
+            }
+
+    def ensure_mqtt_datapush(self):
+        """Create or update managed Xerus MQTT Data Push entries."""
+        with self._lock:
+            self.connect()
+            if not self.mqtt_datapush_enabled:
+                self._mqtt_datapush_status = {
+                    "enabled": bool(self.mqtt_datapush_config.get("enabled")),
+                    "configured": False,
+                    "error": "MQTT Data Push is disabled or broker host is empty",
+                }
+                return self._mqtt_datapush_status
+            service = event.DataPushService("/datapush", self.agent)
+            entries = service.listEntries()
+            created = []
+            modified = []
+            errors = []
+            for entry_type, suffix in (
+                (event.DataPushService.EntryType.SENSORLOG, "sensorlog"),
+                (event.DataPushService.EntryType.AUDITLOG, "auditlog"),
+                (event.DataPushService.EntryType.AMSLOG, "assetlog"),
+            ):
+                settings = self._mqtt_entry_settings(entry_type, suffix)
+                entry_id = _matching_datapush_entry_id(entries, settings)
+                try:
+                    if entry_id is None:
+                        ret, new_entry_id = service.addEntry(settings)
+                        if ret == 0:
+                            created.append(int(new_entry_id))
+                        else:
+                            errors.append(f"add {suffix}: return {ret}")
+                    else:
+                        ret = service.modifyEntry(int(entry_id), settings)
+                        if ret == 0:
+                            modified.append(int(entry_id))
+                        else:
+                            errors.append(f"modify {suffix} {entry_id}: return {ret}")
+                except Exception as err:  # noqa: BLE001
+                    errors.append(f"{suffix}: {err}")
+            self._mqtt_datapush_status = {
+                "enabled": True,
+                "configured": not errors,
+                "broker": _redact_url(self._mqtt_broker_url()),
+                "topic_prefix": _mqtt_topic_prefix(self.mqtt_datapush_config.get("topic_prefix")) or self._default_mqtt_topic_prefix(),
+                "created_entry_ids": created,
+                "modified_entry_ids": modified,
+                "errors": errors,
+                "rule_strategy": "MQTT push entries managed; JSON-RPC polling remains authoritative after each MQTT wake-up.",
+                "last_configured": datetime.now(timezone.utc).isoformat(),
+            }
+            return self._mqtt_datapush_status
+
+    def _mqtt_entry_settings(self, entry_type, suffix):
+        """Build one Data Push entry settings object for MQTT."""
+        topic_prefix = _mqtt_topic_prefix(self.mqtt_datapush_config.get("topic_prefix")) or self._default_mqtt_topic_prefix()
+        return event.DataPushService.EntrySettings(
+            url=self._mqtt_broker_url(),
+            allowOffTimeRangeCerts=not bool(self.mqtt_datapush_config.get("tls")),
+            useAuth=bool(self.mqtt_datapush_config.get("username")),
+            username=str(self.mqtt_datapush_config.get("username") or ""),
+            password=str(self.mqtt_datapush_config.get("password") or ""),
+            type=entry_type,
+            items=[],
+            mqttSettings=event.DataPushService.MqttSettings(
+                topicPrefix=f"{topic_prefix}{suffix}/",
+            ),
+        )
+
+    def _mqtt_broker_url(self):
+        """Return the broker URL expected by Xerus Data Push."""
+        scheme = "mqtts" if self.mqtt_datapush_config.get("tls") else "mqtt"
+        host = str(self.mqtt_datapush_config.get("host") or "").strip()
+        port = int(self.mqtt_datapush_config.get("port") or (8883 if scheme == "mqtts" else 1883))
+        return f"{scheme}://{host}:{port}"
+
+    def _default_mqtt_topic_prefix(self):
+        """Return the managed topic prefix for this PDU."""
+        rack = _slug(self.rack_name or "rack")
+        return f"ldcs/xerus/{rack}/{_slug(self.host)}/"
 
     def connect(self):
         """Create SDK agent and PDU proxy."""
@@ -326,6 +496,7 @@ class RaritanClient:
                 self._metadata = self._read_pdu_metadata(self.pdu)
                 descriptors = []
                 self._sensors_by_key = {}
+                self._controllable_state_switches = {}
                 self._waveform_sources = {}
                 self._asset_strips = {}
                 self._asset_strip_selected_targets = {}
@@ -335,6 +506,7 @@ class RaritanClient:
                 self._outlet_details = {}
                 self._ocp_details = {}
                 self._poles_by_target = {}
+                self._link_statuses = self._link_unit_statuses()
                 self._collect_pdu(descriptors, self.pdu, 0, self.device_info)
                 for link_id, link_pdu, link_metadata, link_status in self._linked_pdus():
                     self._collect_pdu(
@@ -352,6 +524,8 @@ class RaritanClient:
                 self._collect_asset_logger(descriptors)
                 self._collect_alarm_summary(descriptors)
                 self._collect_security_summary(descriptors)
+                self._collect_service_status(descriptors)
+                self._collect_config_snapshot(descriptors)
                 self._collect_modbus_inventory(descriptors)
                 self.sensor_descriptors = descriptors
                 self._descriptors_by_key = {descriptor.key: descriptor for descriptor in descriptors}
@@ -376,6 +550,8 @@ class RaritanClient:
         security_descriptors = []
         waveform_descriptors = []
         inventory_descriptors = []
+        service_descriptors = []
+        config_descriptors = []
         sensor_requests = []
         sensor_descriptors = []
         prometheus_samples = {}
@@ -402,6 +578,12 @@ class RaritanClient:
                 continue
             if descriptor.kind == SensorKind.INVENTORY:
                 inventory_descriptors.append(descriptor)
+                continue
+            if descriptor.kind == SensorKind.SERVICE_STATUS:
+                service_descriptors.append(descriptor)
+                continue
+            if descriptor.kind == SensorKind.CONFIG_SNAPSHOT:
+                config_descriptors.append(descriptor)
                 continue
             sensor = self._sensors_by_key.get(descriptor.key)
             prometheus_sample = (
@@ -461,6 +643,8 @@ class RaritanClient:
                         data[descriptor.key] = _binary_state_value(state, "contact")
                     elif _is_ocp_trip_descriptor(descriptor):
                         data[descriptor.key] = _ocp_trip_state_value(state)
+                    elif _is_rack_door_state_descriptor(descriptor):
+                        data[descriptor.key] = _rack_security_state_value(state, descriptor.type_name)
                     else:
                         data[descriptor.key] = {
                             "available": bool(state.available),
@@ -507,6 +691,12 @@ class RaritanClient:
 
         if inventory_descriptors:
             data.update(self._read_inventory(inventory_descriptors))
+
+        if service_descriptors:
+            data.update(self._read_service_status(service_descriptors))
+
+        if config_descriptors:
+            data.update(self._read_config_snapshot(config_descriptors))
 
         for outlet_id, sample in self.prometheus.outlet_states(prometheus_samples).items():
             data[self.outlet_state_key(outlet_id)] = {
@@ -610,6 +800,49 @@ class RaritanClient:
         """Return coordinator key for a Redfish outlet state."""
         return _slug(f"{self.host}_redfish_outlet_{outlet_id}_state")
 
+    def controllable_state_descriptors(self):
+        """Return discovered state sensors that expose the Xerus Switch setState API."""
+        if not self.sensor_descriptors:
+            self.discover()
+        controls = [
+            descriptor
+            for descriptor in self.sensor_descriptors
+            if self._is_controllable_state_descriptor(descriptor)
+        ]
+        switch_like = [
+            descriptor
+            for descriptor in self.sensor_descriptors
+            if "/sensors/switch" in descriptor.target
+            or "_sensors_switch_" in _slug(descriptor.target)
+        ]
+        _LOGGER.debug(
+            "LDCS controllable discovery on %s: descriptors=%s switch_like=%s controls=%s first_switch_like=%s",
+            self.host,
+            len(self.sensor_descriptors),
+            len(switch_like),
+            len(controls),
+            [
+                {
+                    "name": descriptor.name,
+                    "kind": descriptor.kind.value,
+                    "type": descriptor.type_name,
+                    "target": descriptor.target,
+                }
+                for descriptor in switch_like[:10]
+            ],
+        )
+        return controls
+
+    def set_controllable_state(self, key, turn_on):
+        """Set a writable Xerus state sensor through the SDK Switch interface."""
+        with self._lock:
+            switch = self._controllable_state_switches.get(key)
+            if switch is None:
+                sensor = self._sensors_by_key[key]
+                switch = sensors.Switch(sensor.target, self.agent)
+                self._controllable_state_switches[key] = switch
+            switch.setState(1 if turn_on else 0)
+
     def outlet_details(self, outlet_id):
         """Return discovered metadata for a one-based outlet ID."""
         return self._outlet_details.get(str(outlet_id), {})
@@ -663,8 +896,9 @@ class RaritanClient:
 
     def _linked_pdus(self):
         """Yield linked PDU proxies exposed by the primary unit."""
-        statuses = self._link_unit_statuses()
-        for link_id in range(2, 9):
+        statuses = self._link_statuses or self._link_unit_statuses()
+        link_ids = sorted(statuses) if statuses else range(2, 9)
+        for link_id in link_ids:
             link_pdu = pdumodel.Pdu(f"/model/pdu/{link_id}", self.agent)
             try:
                 metadata = self._read_pdu_metadata(link_pdu)
@@ -676,18 +910,28 @@ class RaritanClient:
     def _link_unit_statuses(self):
         """Return PDU Link status details from the cascade manager when available."""
         if self.cascade_manager is None:
+            self._link_statuses = {}
             return {}
         try:
             status = self.cascade_manager.getStatus()
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Unable to read PDU Link status on %s: %s", self.host, err)
+            self._link_statuses = {}
             return {}
         result = {}
-        for unit in getattr(status, "linkUnits", []) or []:
+        link_units = getattr(status, "linkUnits", []) or []
+        if isinstance(link_units, dict):
+            items = link_units.items()
+        else:
+            items = ((None, unit) for unit in link_units)
+        for unit_key, unit in items:
             link_id = getattr(unit, "linkId", getattr(unit, "id", None))
+            if link_id is None and unit_key is not None:
+                link_id = unit_key
             if link_id is None:
                 continue
             result[int(link_id)] = _json_safe(unit)
+        self._link_statuses = result
         return result
 
     def _collect_pdu(self, descriptors, pdu, pdu_id, device_info, attributes=None):
@@ -767,7 +1011,7 @@ class RaritanClient:
     def _outlet_group_device_info(self, group_id, attributes):
         """Return a separate Home Assistant device for an outlet group."""
         group_name = attributes.get("outlet_group_name") or f"Outlet Group {group_id}"
-        return {
+        device_info = {
             "identifiers": {(DOMAIN, f"{self.device_identifier or self.host}_outlet_group_{group_id}")},
             "manufacturer": self._metadata.get("manufacturer") or "Legrand",
             "model": "Xerus Outlet Group",
@@ -775,6 +1019,10 @@ class RaritanClient:
             "sw_version": self._metadata.get("fw_revision"),
             "configuration_url": f"https://{self.host}",
         }
+        if self._metadata:
+            primary_identifier = self.device_identifier or self._metadata.get("serial_number") or self.host
+            device_info["via_device"] = (DOMAIN, primary_identifier)
+        return device_info
 
     def _collect_children(self, descriptors, label, getter, pdu_id=0, device_info=None, base_attributes=None):
         try:
@@ -822,7 +1070,7 @@ class RaritanClient:
                     _LOGGER.debug("Unable to read peripheral slot %s at %s on %s: %s", index, manager_target, self.host, err)
                     continue
                 if getattr(device, "device", None) is not None:
-                    type_name, unit_name = _sensor_type_names(device.device)
+                    type_name, unit_name = "UNKNOWN", "NONE"
                     sensor_name = settings.name or f"External Sensor {index}"
                     sensor_description = getattr(settings, "description", "")
                     inventory.append(
@@ -853,6 +1101,8 @@ class RaritanClient:
                             "peripheral_manager_target": manager_target,
                         },
                         device_info=device_info,
+                        type_name=type_name,
+                        unit_name=unit_name,
                     )
             if inventory:
                 break
@@ -934,7 +1184,62 @@ class RaritanClient:
                     "modbus_start_address": "0000h",
                     "modbus_register_count": 5,
                 },
-                device_info=self.device_info,
+                device_info=self._rack_or_device_info(),
+            )
+        )
+
+    def _collect_service_status(self, descriptors):
+        """Add a summary entity for PDU protocol and service configuration."""
+        descriptors.append(
+            SensorDescriptor(
+                key=_slug(f"{self.host}_pdu_service_status"),
+                name="PDU Service Status",
+                context="PDU services",
+                target="/net/services",
+                kind=SensorKind.SERVICE_STATUS,
+                field="service_status",
+                type_name="SERVICE_STATUS",
+                asset_field="service_status",
+                attributes={
+                    "ldcs_protocol": "json_rpc",
+                    "service_status_sources": [
+                        "net.Services",
+                        "devsettings.Snmp",
+                        "devsettings.Modbus",
+                        "security.Security",
+                        "tcp_connect",
+                    ],
+                },
+                device_info=self._rack_or_device_info(),
+            )
+        )
+
+    def _collect_config_snapshot(self, descriptors):
+        """Add a diagnostic snapshot entity for PDU configuration."""
+        descriptors.append(
+            SensorDescriptor(
+                key=_slug(f"{self.host}_pdu_config_snapshot"),
+                name="PDU Config Snapshot",
+                context="PDU configuration",
+                target="/event_engine",
+                kind=SensorKind.CONFIG_SNAPSHOT,
+                field="config_snapshot",
+                type_name="CONFIG",
+                asset_field="config_snapshot",
+                attributes={
+                    "ldcs_protocol": "json_rpc",
+                    "configuration_sources": [
+                        "net.Services",
+                        "devsettings.Snmp",
+                        "devsettings.Modbus",
+                        "security.Security",
+                        "event.Engine",
+                        "event.DataPushService",
+                        "smartlock.DoorAccessControl",
+                        "cascading.CascadeManager",
+                    ],
+                },
+                device_info=self._rack_or_device_info(),
             )
         )
 
@@ -1374,11 +1679,24 @@ class RaritanClient:
             sensor = getattr(struct, field, None)
             self._add_sensor(descriptors, context, field, sensor, attributes, device, device_info)
 
-    def _add_sensor(self, descriptors, context, field, sensor, attributes=None, device=None, device_info=None):
+    def _add_sensor(
+        self,
+        descriptors,
+        context,
+        field,
+        sensor,
+        attributes=None,
+        device=None,
+        device_info=None,
+        type_name=None,
+        unit_name=None,
+    ):
         if not self._profile_includes(context, field):
             return
 
-        if isinstance(sensor, sensors.NumericSensor):
+        if isinstance(sensor, sensors.Switch):
+            kind = SensorKind.STATE
+        elif isinstance(sensor, sensors.NumericSensor):
             kind = SensorKind.NUMERIC
         elif isinstance(sensor, sensors.StateSensor):
             kind = SensorKind.STATE
@@ -1390,7 +1708,8 @@ class RaritanClient:
         if key in self._sensors_by_key:
             return
 
-        type_name, unit_name = _sensor_type_names(sensor)
+        if type_name is None and unit_name is None:
+            type_name, unit_name = _sensor_type_names(sensor)
         name = _pretty_name(context, field, type_name, attributes)
         descriptor = SensorDescriptor(
             key=key,
@@ -1408,6 +1727,29 @@ class RaritanClient:
         self._sensors_by_key[key] = sensor
         if _is_outlet_state_descriptor(descriptor) and device is not None:
             self._outlet_state_devices_by_key[key] = device
+
+    def _is_controllable_state_descriptor(self, descriptor):
+        """Return true when a state sensor can be controlled with setState."""
+        if not _is_switch_backed_state_descriptor(descriptor) or _is_outlet_state_descriptor(descriptor):
+            return False
+        sensor = self._sensors_by_key.get(descriptor.key)
+        if sensor is None:
+            return False
+        if descriptor.type_name not in {
+            "CONTACT_CLOSURE",
+            "DRY_CONTACT",
+            "ON_OFF_SENSOR",
+            "POWERED_DRY_CONTACT",
+            "DOOR_LOCK_STATE",
+            "DOOR_HANDLE_LOCK",
+            "UNKNOWN",
+        }:
+            return False
+        if not _looks_controllable_state_descriptor(descriptor):
+            return False
+        if isinstance(sensor, sensors.Switch):
+            self._controllable_state_switches[descriptor.key] = sensor
+        return True
 
     def _device_attributes(self, label, index, device, pdu_id=0):
         """Return useful settings and protection details for one PDU child."""
@@ -1606,6 +1948,364 @@ class RaritanClient:
                 data[descriptor.key] = value
         return data
 
+    def _read_service_status(self, descriptors):
+        """Return protocol and service status diagnostics."""
+        status = self._service_status_value()
+        return {
+            descriptor.key: {
+                "available": status["available"],
+                "value": status["value"],
+                "attributes": {
+                    **(descriptor.attributes or {}),
+                    **status["attributes"],
+                },
+            }
+            for descriptor in descriptors
+        }
+
+    def _read_config_snapshot(self, descriptors):
+        """Return full PDU configuration snapshot diagnostics."""
+        snapshot = self._config_snapshot_value()
+        return {
+            descriptor.key: {
+                "available": snapshot["available"],
+                "value": snapshot["value"],
+                "attributes": {
+                    **(descriptor.attributes or {}),
+                    **snapshot["attributes"],
+                },
+            }
+            for descriptor in descriptors
+        }
+
+    def _config_snapshot_value(self):
+        """Return cached PDU configuration snapshot details."""
+        now = monotonic()
+        if (
+            self._config_snapshot_cache is not None
+            and now - self._last_config_snapshot_refresh < SERVICE_STATUS_REFRESH_INTERVAL
+        ):
+            return self._config_snapshot_cache
+
+        service_value = self._service_status_value()
+        services = service_value.get("attributes", {}).get("services", {})
+        event_config = self._event_engine_config()
+        datapush_config = self._datapush_config()
+        security_values, security_attrs = self._security_snapshot()
+        link_units = self._link_statuses or self._link_unit_statuses()
+        topology = {
+            "mode": "pdu_link" if link_units else "standalone_or_separate_ha_entries",
+            "rack_name": self.rack_name,
+            "rack_role": self.rack_role,
+            "rack_position": self.rack_position,
+            "primary": self._metadata,
+            "link_units": link_units,
+        }
+        counts = {
+            "enabled_service_count": service_value.get("attributes", {}).get("configured_service_count", 0),
+            "event_rule_count": len(event_config.get("rules", [])),
+            "enabled_event_rule_count": sum(1 for rule in event_config.get("rules", []) if rule.get("enabled")),
+            "event_action_count": len(event_config.get("actions", [])),
+            "datapush_entry_count": len(datapush_config.get("entries", [])),
+            "door_access_rule_count": len(security_attrs.get("door_access_rules", [])),
+            "linked_pdu_count": len(topology["link_units"]),
+        }
+        self._config_snapshot_cache = {
+            "available": True,
+            "value": (
+                f"{counts['enabled_service_count']} services, "
+                f"{counts['enabled_event_rule_count']}/{counts['event_rule_count']} rules, "
+                f"{counts['datapush_entry_count']} data push"
+            ),
+            "attributes": {
+                "telemetry_source": "json_rpc",
+                "snapshot_timestamp": datetime.now(timezone.utc).isoformat(),
+                "configuration_counts": counts,
+                "topology": topology,
+                "services": services,
+                "network_services": service_value.get("attributes", {}).get("network_services", {}),
+                "data_push_entries": datapush_config.get("entries", []),
+                "data_push_errors": datapush_config.get("errors", []),
+                "managed_mqtt_datapush": self._mqtt_datapush_status,
+                "recent_mqtt_events": list(self._mqtt_events),
+                "recent_mqtt_event_count": self._mqtt_event_count,
+                "event_action_types": event_config.get("action_types", []),
+                "event_actions": event_config.get("actions", []),
+                "event_rules": event_config.get("rules", []),
+                "event_config_errors": event_config.get("errors", []),
+                "door_access_rules": security_attrs.get("door_access_rules", []),
+                "door_access_rule_count": security_values.get("door_access_rule_count"),
+                "security_unsupported": security_attrs.get("unsupported_security_interfaces", []),
+            },
+        }
+        self._last_config_snapshot_refresh = now
+        return self._config_snapshot_cache
+
+    def _service_status_value(self):
+        """Return cached PDU service configuration and reachability details."""
+        now = monotonic()
+        if (
+            self._service_status_cache is not None
+            and now - self._last_service_status_refresh < SERVICE_STATUS_REFRESH_INTERVAL
+        ):
+            return self._service_status_cache
+
+        services = self._network_service_settings()
+        snmp = self._snmp_settings()
+        modbus = self._modbus_settings()
+        ssh = self._ssh_settings()
+
+        service_status = {
+            "json_rpc": {
+                "configured": True,
+                "reachable": True,
+                "source": "active_sdk_session",
+                "detail": "JSON-RPC authenticated successfully",
+            },
+            "http": self._tcp_service_status("http", services, 80),
+            "https": self._tcp_service_status("https", services, 443),
+            "ssh": {
+                **self._tcp_service_status("ssh", services, 22),
+                "password_auth": ssh.get("allow_password_auth"),
+                "public_key_auth": ssh.get("allow_public_key_auth"),
+                "settings_source": ssh.get("source"),
+                "settings_error": ssh.get("error"),
+            },
+            "modbus_tcp": {
+                **self._tcp_service_status("modbus", services, self.modbus.port),
+                "readonly": modbus.get("tcp_readonly"),
+                "settings_source": modbus.get("source"),
+                "settings_error": modbus.get("error"),
+            },
+            "modbus_rtu": {
+                "configured": modbus.get("serial_enabled"),
+                "reachable": None,
+                "source": modbus.get("source"),
+                "detail": "Modbus/RTU serial gateway setting",
+                "baudrate": modbus.get("serial_baudrate"),
+                "parity": modbus.get("serial_parity"),
+                "stopbits": modbus.get("serial_stopbits"),
+                "readonly": modbus.get("serial_readonly"),
+                "error": modbus.get("error"),
+            },
+            "snmp_v1_v2c": {
+                "configured": snmp.get("v2_enabled"),
+                "reachable": None,
+                "source": snmp.get("source"),
+                "detail": "SNMP is UDP; configuration is read via JSON-RPC",
+                "sys_name": snmp.get("sys_name"),
+                "sys_location": snmp.get("sys_location"),
+                "error": snmp.get("error"),
+            },
+            "snmp_v3": {
+                "configured": snmp.get("v3_enabled"),
+                "reachable": None,
+                "source": snmp.get("source"),
+                "detail": "SNMPv3 configuration is read via JSON-RPC",
+                "error": snmp.get("error"),
+            },
+            "prometheus": self._http_endpoint_status(
+                "prometheus",
+                f"https://{self.host}/cgi-bin/dump_prometheus.cgi?include_names=1",
+            ),
+            "redfish": self._http_endpoint_status(
+                "redfish",
+                f"https://{self.host}/redfish/v1/",
+            ),
+            "mqtt_datapush": {
+                "configured": self.mqtt_datapush_enabled or bool(self.mqtt_datapush_config.get("enabled")),
+                "reachable": None,
+                "source": "home_assistant_mqtt_subscription",
+                "detail": f"Home Assistant refresh topic: {self.mqtt_topic}",
+                "managed": self.mqtt_datapush_enabled,
+                "last_message_time": self._mqtt_datapush_status.get("last_message_time"),
+                "last_topic": self._mqtt_datapush_status.get("last_topic"),
+                "message_count": self._mqtt_event_count,
+                "provisioning": self._mqtt_datapush_status,
+            },
+        }
+
+        configured_count = sum(1 for item in service_status.values() if item.get("configured") is True)
+        reachable_count = sum(1 for item in service_status.values() if item.get("reachable") is True)
+        self._service_status_cache = {
+            "available": True,
+            "value": f"{reachable_count}/{len(service_status)} reachable",
+            "attributes": {
+                "telemetry_source": "json_rpc",
+                "service_count": len(service_status),
+                "configured_service_count": configured_count,
+                "reachable_service_count": reachable_count,
+                "services": service_status,
+                "network_services": services,
+                "recent_mqtt_events": list(self._mqtt_events),
+            },
+        }
+        self._last_service_status_refresh = now
+        return self._service_status_cache
+
+    def _network_service_settings(self):
+        """Return enabled TCP service settings from Xerus."""
+        if net is None:
+            return {}
+        try:
+            service_settings = net.Services("/net/services", self.agent).getSettings()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to read network service settings on %s: %s", self.host, err)
+            return {"_error": str(err)}
+        return {
+            str(getattr(item, "service", "")).lower(): {
+                "configured": bool(getattr(item, "enable", False)),
+                "port": int(getattr(item, "port", 0) or 0),
+                "source": "net.Services",
+            }
+            for item in service_settings
+            if getattr(item, "service", None)
+        }
+
+    def _snmp_settings(self):
+        """Return SNMP settings from Xerus when exposed by the SDK."""
+        if devsettings is None or not hasattr(devsettings, "Snmp"):
+            return {"source": "unavailable", "error": "raritan.rpc.devsettings.Snmp unavailable"}
+        try:
+            cfg = devsettings.Snmp("/snmp", self.agent).getConfiguration()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to read SNMP settings on %s: %s", self.host, err)
+            return {"source": "devsettings.Snmp", "error": str(err)}
+        return {
+            "source": "devsettings.Snmp",
+            "v2_enabled": bool(getattr(cfg, "v2enable", False)),
+            "v3_enabled": bool(getattr(cfg, "v3enable", False)),
+            "sys_name": getattr(cfg, "sysName", ""),
+            "sys_location": getattr(cfg, "sysLocation", ""),
+            "sys_contact": getattr(cfg, "sysContact", ""),
+        }
+
+    def _modbus_settings(self):
+        """Return Modbus settings from Xerus when exposed by the SDK."""
+        if devsettings is None or not hasattr(devsettings, "Modbus"):
+            return {"source": "unavailable", "error": "raritan.rpc.devsettings.Modbus unavailable"}
+        try:
+            settings = devsettings.Modbus("/modbus", self.agent).getSettings()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to read Modbus settings on %s: %s", self.host, err)
+            return {"source": "devsettings.Modbus", "error": str(err)}
+        tcp = getattr(settings, "tcp", None)
+        serial = getattr(settings, "serial", None)
+        return {
+            "source": "devsettings.Modbus",
+            "tcp_readonly": getattr(tcp, "readonly", None),
+            "serial_enabled": bool(getattr(serial, "enabled", False)) if serial is not None else None,
+            "serial_baudrate": getattr(serial, "baudrate", None),
+            "serial_parity": _enum_name(getattr(serial, "parity", None)),
+            "serial_stopbits": getattr(serial, "stopbits", None),
+            "serial_readonly": getattr(serial, "readonly", None),
+            "primary_unit_id": getattr(settings, "primaryUnitId", None),
+        }
+
+    def _ssh_settings(self):
+        """Return SSH authentication settings from Xerus when exposed by the SDK."""
+        if security is None or not hasattr(security, "Security"):
+            return {"source": "unavailable", "error": "raritan.rpc.security.Security unavailable"}
+        try:
+            settings = security.Security("/security", self.agent).getSSHSettings()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to read SSH settings on %s: %s", self.host, err)
+            return {"source": "security.Security", "error": str(err)}
+        return {
+            "source": "security.Security",
+            "allow_password_auth": bool(getattr(settings, "allowPasswordAuth", False)),
+            "allow_public_key_auth": bool(getattr(settings, "allowPublicKeyAuth", False)),
+        }
+
+    def _tcp_service_status(self, service_name, services, default_port):
+        """Return combined configured/reachable state for one TCP service."""
+        configured = None
+        port = default_port
+        service = services.get(service_name) if isinstance(services, dict) else None
+        if isinstance(service, dict):
+            configured = service.get("configured")
+            port = service.get("port") or default_port
+        reachable = _tcp_reachable(self.host, port)
+        return {
+            "configured": configured,
+            "reachable": reachable,
+            "port": port,
+            "source": service.get("source") if isinstance(service, dict) else "tcp_connect",
+            "detail": "TCP service setting plus Home Assistant reachability",
+        }
+
+    def _http_endpoint_status(self, name, url):
+        """Return whether an HTTPS service endpoint responds."""
+        try:
+            response = requests.get(
+                url,
+                auth=(self.username, self.password),
+                verify=self.verify_ssl,
+                timeout=5,
+            )
+            reachable = 200 <= response.status_code < 500
+            return {
+                "configured": reachable,
+                "reachable": reachable,
+                "source": "http_get",
+                "status_code": response.status_code,
+                "detail": f"{name} endpoint responded",
+            }
+        except Exception as err:  # noqa: BLE001
+            return {
+                "configured": None,
+                "reachable": False,
+                "source": "http_get",
+                "error": str(err),
+                "detail": f"{name} endpoint did not respond",
+            }
+
+    def _event_engine_config(self):
+        """Return configured Xerus event actions and rules."""
+        errors = []
+        engine = event.Engine("/event_engine", self.agent)
+        try:
+            actions = engine.listActions()
+        except Exception as err:  # noqa: BLE001
+            actions = []
+            errors.append(f"listActions: {err}")
+        try:
+            action_types = list(engine.listActionTypes())
+        except Exception as err:  # noqa: BLE001
+            action_types = []
+            errors.append(f"listActionTypes: {err}")
+        try:
+            rules = engine.listRules()
+        except Exception as err:  # noqa: BLE001
+            rules = []
+            errors.append(f"listRules: {err}")
+        actions_by_id = {str(getattr(action, "id", "")): _event_action_attrs(action) for action in actions}
+        return {
+            "actions": list(actions_by_id.values()),
+            "action_types": action_types,
+            "rules": [_event_rule_attrs(rule, actions_by_id) for rule in rules],
+            "errors": errors,
+        }
+
+    def _datapush_config(self):
+        """Return configured Xerus data push entries."""
+        errors = []
+        try:
+            service = event.DataPushService("/datapush", self.agent)
+            entries = service.listEntries()
+        except Exception as err:  # noqa: BLE001
+            return {"entries": [], "errors": [str(err)]}
+
+        result = []
+        for entry_id, settings in _iter_map(entries):
+            status = None
+            try:
+                _ret, status = service.getEntryStatus(int(entry_id))
+            except Exception as err:  # noqa: BLE001
+                errors.append(f"getEntryStatus {entry_id}: {err}")
+            result.append(_datapush_entry_attrs(entry_id, settings, status))
+        return {"entries": result, "errors": errors}
+
     def _waveform_value(self, waveform):
         """Return a JSON-safe Home Assistant value for an SDK waveform."""
         voltage = list(waveform.voltage)
@@ -1722,11 +2422,59 @@ def _is_ocp_trip_descriptor(descriptor):
     return descriptor.context.startswith("OCP ") and descriptor.field == "trip"
 
 
+def _is_rack_door_state_descriptor(descriptor):
+    return descriptor.type_name in {"DOOR_STATE", "DOOR_LOCK_STATE", "DOOR_HANDLE_LOCK"}
+
+
+def _is_switch_backed_state_descriptor(descriptor):
+    """Return true for regular state sensors and SDK switch-backed state targets."""
+    if descriptor.kind == SensorKind.STATE:
+        return True
+    return "/sensors/switch" in descriptor.target or "_sensors_switch_" in _slug(descriptor.target)
+
+
+def _looks_controllable_state_descriptor(descriptor):
+    """Return true for state sensors that should be offered as controls."""
+    lowered = " ".join(
+        str(value or "").lower()
+        for value in (
+            descriptor.name,
+            descriptor.context,
+            descriptor.field,
+            descriptor.type_name,
+            (descriptor.attributes or {}).get("sensor_name"),
+            (descriptor.attributes or {}).get("sensor_configured_name"),
+            (descriptor.attributes or {}).get("sensor_description"),
+        )
+    )
+    return any(
+        token in lowered
+        for token in (
+            "control",
+            "switch",
+            "dry contact",
+            "dry_contact",
+            "powered dry contact",
+            "powered_dry_contact",
+            "contact closure",
+            "contact_closure",
+            "led",
+            "light",
+            "beeper",
+            "lock",
+            "handle",
+            "door_handle_lock",
+            "door_lock_state",
+        )
+    )
+
+
 def _requires_state_label(descriptor):
     return (
         _is_outlet_state_descriptor(descriptor)
         or _is_contact_state_descriptor(descriptor)
         or _is_ocp_trip_descriptor(descriptor)
+        or _is_rack_door_state_descriptor(descriptor)
     )
 
 
@@ -1810,6 +2558,46 @@ def _ocp_trip_state_value(state):
     return value
 
 
+def _rack_security_state_value(state, type_name):
+    """Return display-friendly rack door and lock state labels."""
+    available = bool(getattr(state, "available", True))
+    raw_value = getattr(state, "value", None)
+    if not available:
+        return {
+            "available": False,
+            "value": None,
+            "attributes": {
+                "raw_state": _json_safe(raw_value),
+                "state_source": "rack_security",
+                "telemetry_source": "json_rpc",
+            },
+        }
+    return {
+        "available": True,
+        "value": _rack_security_state_label(raw_value, type_name),
+        "attributes": {
+            "raw_state": _json_safe(raw_value),
+            "state_source": "rack_security",
+            "telemetry_source": "json_rpc",
+        },
+    }
+
+
+def _rack_security_state_label(value, type_name):
+    name = _enum_name(value)
+    if type_name == "DOOR_STATE":
+        if name in {"0", "false", "open", "opened"}:
+            return "Open"
+        if name in {"1", "true", "closed", "close"}:
+            return "Closed"
+    if type_name in {"DOOR_LOCK_STATE", "DOOR_HANDLE_LOCK"}:
+        if name in {"0", "false", "open", "opened", "unlocked", "unlock"}:
+            return "Unlocked"
+        if name in {"1", "true", "closed", "close", "locked", "lock"}:
+            return "Locked"
+    return name.replace("_", " ").title() if name else "Unknown"
+
+
 def _binary_state_label(value):
     if value is None:
         return "Unknown"
@@ -1890,6 +2678,132 @@ def _alarm_attrs(alarm):
             for alert in alarm.alerts
         ],
     }
+
+
+def _event_action_attrs(action):
+    """Return JSON-safe event action details with sensitive arguments redacted."""
+    return {
+        "id": str(getattr(action, "id", "")),
+        "name": getattr(action, "name", ""),
+        "type": getattr(action, "type", ""),
+        "is_system": bool(getattr(action, "isSystem", False)),
+        "arguments": _redacted_key_values(getattr(action, "arguments", [])),
+    }
+
+
+def _event_rule_attrs(rule, actions_by_id):
+    """Return JSON-safe event rule details."""
+    action_ids = [str(action_id) for action_id in getattr(rule, "actionIds", []) or []]
+    return {
+        "id": str(getattr(rule, "id", "")),
+        "name": getattr(rule, "name", ""),
+        "enabled": bool(getattr(rule, "isEnabled", False)),
+        "system": bool(getattr(rule, "isSystem", False)),
+        "auto_rearm": bool(getattr(rule, "isAutoRearm", False)),
+        "has_matched": bool(getattr(rule, "hasMatched", False)),
+        "action_ids": action_ids,
+        "actions": [
+            {
+                "id": action_id,
+                "name": actions_by_id.get(action_id, {}).get("name"),
+                "type": actions_by_id.get(action_id, {}).get("type"),
+            }
+            for action_id in action_ids
+        ],
+        "condition": _condition_attrs(getattr(rule, "condition", None)),
+        "arguments": _redacted_key_values(getattr(rule, "arguments", [])),
+    }
+
+
+def _condition_attrs(condition):
+    """Return concise event-rule condition details."""
+    if condition is None:
+        return {}
+    nested = [_condition_attrs(item) for item in getattr(condition, "conditions", []) or []]
+    return {
+        "negate": bool(getattr(condition, "negate", False)),
+        "operation": _enum_name(getattr(condition, "operation", None)),
+        "match_type": _enum_name(getattr(condition, "matchType", None)),
+        "event_id": list(getattr(condition, "eventId", []) or []),
+        "conditions": nested,
+    }
+
+
+def _datapush_entry_attrs(entry_id, settings, status):
+    """Return JSON-safe data push entry details with credentials redacted."""
+    mqtt_settings = getattr(settings, "mqttSettings", None)
+    return {
+        "id": entry_id,
+        "url": _redact_url(getattr(settings, "url", "")),
+        "type": _enum_name(getattr(settings, "type", None)),
+        "use_auth": bool(getattr(settings, "useAuth", False)),
+        "username": "set" if getattr(settings, "username", "") else "",
+        "password": "redacted" if getattr(settings, "password", "") else "",
+        "allow_off_time_range_certs": bool(getattr(settings, "allowOffTimeRangeCerts", False)),
+        "item_count": len(getattr(settings, "items", []) or []),
+        "items": list(getattr(settings, "items", []) or [])[:40],
+        "mqtt_topic_prefix": getattr(mqtt_settings, "topicPrefix", "") if mqtt_settings else "",
+        "status": _json_safe(status) if status is not None else None,
+    }
+
+
+def _matching_datapush_entry_id(entries, settings):
+    """Return an existing Data Push entry matching URL, type, and topic prefix."""
+    desired_url = getattr(settings, "url", "")
+    desired_type = getattr(settings, "type", None)
+    desired_topic = getattr(getattr(settings, "mqttSettings", None), "topicPrefix", "")
+    for entry_id, current in _iter_map(entries):
+        current_topic = getattr(getattr(current, "mqttSettings", None), "topicPrefix", "")
+        if (
+            getattr(current, "url", "") == desired_url
+            and getattr(current, "type", None) == desired_type
+            and current_topic == desired_topic
+        ):
+            return entry_id
+    return None
+
+
+def _mqtt_topic_prefix(value):
+    """Return a normalized MQTT topic prefix ending with a slash."""
+    prefix = str(value or "").strip().strip("/")
+    if not prefix:
+        return ""
+    return f"{prefix}/"
+
+
+def _mqtt_payload_summary(payload):
+    """Return a compact dashboard-safe summary of an MQTT payload."""
+    if isinstance(payload, dict):
+        keys = list(payload.keys())[:8]
+        summary = {"keys": keys}
+        for key in ("event", "type", "name", "sensor", "state", "value", "severity", "timestamp"):
+            if key in payload:
+                summary[key] = _json_safe(payload[key])
+        return summary
+    if isinstance(payload, list):
+        return {"items": len(payload), "first": _json_safe(payload[0]) if payload else None}
+    text = str(payload)
+    return text[:500]
+
+
+def _redacted_key_values(values):
+    """Return SDK KeyValue arguments while hiding secrets."""
+    result = []
+    for item in values or []:
+        key = str(getattr(item, "key", ""))
+        value = getattr(item, "value", "")
+        lowered = key.lower()
+        if any(token in lowered for token in ("password", "secret", "token", "credential", "pin", "card", "uid")):
+            value = "redacted"
+        result.append({"key": key, "value": _json_safe(value)})
+    return result
+
+
+def _redact_url(value):
+    """Hide inline credentials in a configured URL."""
+    if not value:
+        return value
+    return re.sub(r"(://)([^/@:]+)(?::[^/@]*)?@", r"\1redacted@", str(value))
 
 
 def _asset_tag_attrs(tag):
@@ -2083,6 +2997,15 @@ def _timestamp(value):
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.isoformat()
+
+
+def _tcp_reachable(host, port, timeout=2):
+    """Return whether a TCP port accepts a connection."""
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _error_value(err):

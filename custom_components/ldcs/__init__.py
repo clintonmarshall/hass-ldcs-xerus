@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import json
 import logging
 from pathlib import Path
 
@@ -24,10 +25,20 @@ from .const import (
     CONF_RACK_POSITION,
     CONF_RACK_ROLE,
     CONF_VERIFY_SSL,
+    CONF_XERUS_MQTT_DATAPUSH,
+    CONF_XERUS_MQTT_HOST,
+    CONF_XERUS_MQTT_PASSWORD,
+    CONF_XERUS_MQTT_PORT,
+    CONF_XERUS_MQTT_TLS,
+    CONF_XERUS_MQTT_TOPIC_PREFIX,
+    CONF_XERUS_MQTT_USERNAME,
     DEFAULT_PROFILE,
     DEFAULT_MODBUS_PORT,
     DEFAULT_MODBUS_SLAVE_ID,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_XERUS_MQTT_DATAPUSH,
+    DEFAULT_XERUS_MQTT_PORT,
+    DEFAULT_XERUS_MQTT_TLS,
     DOMAIN,
     MQTT_REFRESH_DEBOUNCE,
     PRODUCT_RACK_DASHBOARD,
@@ -71,6 +82,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _async_schedule_dashboard_install(hass, entry)
         return True
 
+    rack_name = entry.data.get(CONF_RACK_NAME) or entry.options.get(CONF_RACK_NAME)
+    if rack_name and entry.title != rack_name:
+        hass.config_entries.async_update_entry(entry, title=rack_name)
+
     client = RaritanClient(
         host=entry.data[CONF_HOST],
         username=entry.data[CONF_USERNAME],
@@ -80,6 +95,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         device_identifier=entry.unique_id,
         modbus_port=entry.data.get(CONF_MODBUS_PORT, DEFAULT_MODBUS_PORT),
         modbus_slave_id=entry.data.get(CONF_MODBUS_SLAVE_ID, DEFAULT_MODBUS_SLAVE_ID),
+        rack_name=rack_name,
+        rack_role=entry.data.get(CONF_RACK_ROLE) or entry.options.get(CONF_RACK_ROLE),
+        rack_position=entry.data.get(CONF_RACK_POSITION) or entry.options.get(CONF_RACK_POSITION),
+        mqtt_datapush_config=_mqtt_datapush_config(entry),
     )
 
     async def _async_update_data():
@@ -107,6 +126,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime
+    _async_register_rack_parent(hass, entry, client)
 
     mqtt_refresh_cancel = None
 
@@ -119,6 +139,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     @callback
     def _async_mqtt_message(_message):
         nonlocal mqtt_refresh_cancel
+        client.note_mqtt_message(
+            topic=_message.topic,
+            payload=_decode_mqtt_payload(_message.payload),
+        )
         if mqtt_refresh_cancel is None:
             mqtt_refresh_cancel = async_call_later(
                 hass,
@@ -145,6 +169,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     runtime["mqtt_cancel_refresh"] = _async_cancel_mqtt_refresh
     await _async_setup_fleet_mqtt(hass)
+    if client.mqtt_datapush_enabled:
+        entry.async_create_background_task(
+            hass,
+            _async_ensure_mqtt_datapush(hass, client, coordinator, entry.title),
+            name=f"{DOMAIN}_{entry.entry_id}_mqtt_datapush_setup",
+        )
 
     await hass.config_entries.async_forward_entry_setups(entry, XERUS_PLATFORMS)
     _async_schedule_dashboard_install(hass, entry)
@@ -153,7 +183,67 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Apply option changes that do not need a full reload."""
-    await _async_maybe_install_dashboard(hass, entry)
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+@callback
+def _async_register_rack_parent(hass: HomeAssistant, entry: ConfigEntry, client: RaritanClient) -> None:
+    """Register the rack parent before child entities are added."""
+    if not client.rack_name:
+        return
+    device_info = client.rack_device_info
+    device_registry = dr.async_get(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers=device_info["identifiers"],
+        manufacturer=device_info.get("manufacturer"),
+        model=device_info.get("model"),
+        name=device_info.get("name"),
+        configuration_url=device_info.get("configuration_url"),
+    )
+
+
+def _mqtt_datapush_config(entry: ConfigEntry) -> dict:
+    """Return merged MQTT Data Push options for a Xerus device."""
+    options = entry.options
+    data = entry.data
+    return {
+        "enabled": bool(options.get(CONF_XERUS_MQTT_DATAPUSH, data.get(CONF_XERUS_MQTT_DATAPUSH, DEFAULT_XERUS_MQTT_DATAPUSH))),
+        "host": str(options.get(CONF_XERUS_MQTT_HOST, data.get(CONF_XERUS_MQTT_HOST, ""))).strip(),
+        "port": int(options.get(CONF_XERUS_MQTT_PORT, data.get(CONF_XERUS_MQTT_PORT, DEFAULT_XERUS_MQTT_PORT)) or DEFAULT_XERUS_MQTT_PORT),
+        "tls": bool(options.get(CONF_XERUS_MQTT_TLS, data.get(CONF_XERUS_MQTT_TLS, DEFAULT_XERUS_MQTT_TLS))),
+        "username": str(options.get(CONF_XERUS_MQTT_USERNAME, data.get(CONF_XERUS_MQTT_USERNAME, ""))).strip(),
+        "password": str(options.get(CONF_XERUS_MQTT_PASSWORD, data.get(CONF_XERUS_MQTT_PASSWORD, ""))),
+        "topic_prefix": str(options.get(CONF_XERUS_MQTT_TOPIC_PREFIX, data.get(CONF_XERUS_MQTT_TOPIC_PREFIX, ""))).strip(),
+    }
+
+
+def _decode_mqtt_payload(payload) -> object:
+    """Decode an MQTT payload into JSON when possible."""
+    if isinstance(payload, bytes):
+        text = payload.decode("utf-8", errors="replace")
+    else:
+        text = str(payload)
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+async def _async_ensure_mqtt_datapush(
+    hass: HomeAssistant,
+    client: RaritanClient,
+    coordinator: DataUpdateCoordinator,
+    title: str,
+) -> None:
+    """Create/update Xerus MQTT data push entries and refresh state."""
+    try:
+        result = await hass.async_add_executor_job(client.ensure_mqtt_datapush)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Unable to configure Xerus MQTT Data Push for %s: %s", title, err)
+        return
+    _LOGGER.info("Xerus MQTT Data Push configuration for %s: %s", title, result)
+    await coordinator.async_request_refresh()
 
 
 async def _async_register_frontend_assets(hass: HomeAssistant) -> None:

@@ -10,7 +10,7 @@
       },
       "xerus_pdu": {
         "title": "Add Xerus rack PDU",
-        "description": "Connect a Raritan, Server Technology, or compatible Legrand Xerus PDU.",
+        "description": "Connect the Xerus device that represents this rack. For PDU Link, add the master only.",
         "data": {
           "host": "Host",
           "username": "Username",
@@ -21,9 +21,22 @@
           "modbus_slave_id": "Modbus slave ID",
           "scan_interval": "Scan interval",
           "rack_name": "Rack name",
-          "rack_role": "Rack role",
-          "rack_position": "Rack position",
+          "xerus_topology": "Xerus rack topology",
+          "rack_position": "Rack position or notes",
           "create_dashboard": "Create or update a rack dashboard"
+        }
+      },
+      "xerus_mqtt": {
+        "title": "Optional Xerus MQTT Data Push",
+        "description": "This enables event-driven refreshes. JSON-RPC still remains the authoritative source for sensors and configuration.",
+        "data": {
+          "xerus_mqtt_datapush": "Manage Xerus MQTT Data Push",
+          "xerus_mqtt_host": "MQTT broker host",
+          "xerus_mqtt_port": "MQTT broker port",
+          "xerus_mqtt_tls": "Use MQTT over TLS",
+          "xerus_mqtt_username": "MQTT username",
+          "xerus_mqtt_password": "MQTT password",
+          "xerus_mqtt_topic_prefix": "MQTT topic prefix"
         }
       },
       "usystems_rdhx": {
@@ -63,7 +76,15 @@
         "data": {
           "scan_interval": "Scan interval",
           "profile": "Discovery profile",
-          "create_dashboard": "Create or update a rack dashboard"
+          "xerus_topology": "Xerus rack topology",
+          "create_dashboard": "Create or update a rack dashboard",
+          "xerus_mqtt_datapush": "Manage Xerus MQTT Data Push",
+          "xerus_mqtt_host": "MQTT broker host",
+          "xerus_mqtt_port": "MQTT broker port",
+          "xerus_mqtt_tls": "Use MQTT over TLS",
+          "xerus_mqtt_username": "MQTT username",
+          "xerus_mqtt_password": "MQTT password",
+          "xerus_mqtt_topic_prefix": "MQTT topic prefix"
         }
       }
     }

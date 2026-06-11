@@ -19,12 +19,17 @@ DASHBOARD_STORAGE_MINOR_VERSION = 1
 DASHBOARDS_STORAGE_KEY = "lovelace_dashboards"
 RESOURCES_STORAGE_KEY = "lovelace_resources"
 RESOURCE_URL_PREFIX = "/ldcs_static"
+LDCS_FRONTEND_VERSION = "0.6.57"
+USE_OPTIONAL_HACS_CARDS = False
+HISTORY_HOURS_TO_SHOW = 8
 LDCS_RESOURCES = (
-    ("ldcs_protocol_health_card", f"{RESOURCE_URL_PREFIX}/ldcs-protocol-health-card.js"),
-    ("ldcs_raritan_rack_visual_card", f"{RESOURCE_URL_PREFIX}/raritan-rack-visual-card.js"),
-    ("ldcs_raritan_cooling_card", f"{RESOURCE_URL_PREFIX}/raritan-cooling-card.js"),
-    ("ldcs_raritan_waveform_card", f"{RESOURCE_URL_PREFIX}/raritan-waveform-card.js"),
-    ("ldcs_raritan_outlet_load_card", f"{RESOURCE_URL_PREFIX}/raritan-outlet-load-card.js"),
+    ("ldcs_protocol_health_card", f"{RESOURCE_URL_PREFIX}/ldcs-protocol-health-card.js?v={LDCS_FRONTEND_VERSION}"),
+    ("ldcs_pdu_config_card", f"{RESOURCE_URL_PREFIX}/ldcs-pdu-config-card.js?v={LDCS_FRONTEND_VERSION}"),
+    ("ldcs_rack_status_card", f"{RESOURCE_URL_PREFIX}/ldcs-rack-status-card.js?v={LDCS_FRONTEND_VERSION}"),
+    ("ldcs_raritan_rack_visual_card", f"{RESOURCE_URL_PREFIX}/raritan-rack-visual-card.js?v={LDCS_FRONTEND_VERSION}"),
+    ("ldcs_raritan_cooling_card", f"{RESOURCE_URL_PREFIX}/raritan-cooling-card.js?v={LDCS_FRONTEND_VERSION}"),
+    ("ldcs_raritan_waveform_card", f"{RESOURCE_URL_PREFIX}/raritan-waveform-card.js?v={LDCS_FRONTEND_VERSION}"),
+    ("ldcs_raritan_outlet_load_card", f"{RESOURCE_URL_PREFIX}/raritan-outlet-load-card.js?v={LDCS_FRONTEND_VERSION}"),
 )
 
 
@@ -92,6 +97,13 @@ async def async_install_rack_dashboard(hass: HomeAssistant, entry: ConfigEntry) 
 
 async def _async_frontend_features(hass: HomeAssistant) -> dict[str, bool]:
     """Return optional frontend resources currently registered in Home Assistant."""
+    if not USE_OPTIONAL_HACS_CARDS:
+        return {
+            "bubble_card": False,
+            "expander_card": False,
+            "gauge_card_pro": False,
+            "mushroom": False,
+        }
     resources = await Store(
         hass,
         DASHBOARD_STORAGE_VERSION,
@@ -122,13 +134,14 @@ async def _async_install_resources(hass: HomeAssistant) -> None:
         resources = {"items": []}
     items = resources.setdefault("items", [])
 
-    changed = False
+    changed = _deduplicate_ldcs_resources(items)
     for resource_id, url in LDCS_RESOURCES:
         item = next(
             (
                 current
                 for current in items
-                if current.get("id") == resource_id or current.get("url") == url
+                if current.get("id") == resource_id
+                or _resource_url_key(current.get("url")) == _resource_url_key(url)
             ),
             None,
         )
@@ -147,6 +160,32 @@ async def _async_install_resources(hass: HomeAssistant) -> None:
             RESOURCES_STORAGE_KEY,
             minor_version=DASHBOARD_STORAGE_MINOR_VERSION,
         ).async_save(resources)
+
+
+def _deduplicate_ldcs_resources(items: list[dict]) -> bool:
+    """Normalize LDCS Lovelace resources to JavaScript module entries."""
+    changed = False
+    seen = set()
+    kept = []
+    for item in items:
+        url_key = _resource_url_key(item.get("url"))
+        if url_key and url_key.startswith(f"{RESOURCE_URL_PREFIX}/"):
+            if url_key in seen:
+                changed = True
+                continue
+            seen.add(url_key)
+            if item.get("res_type") != "module":
+                item["res_type"] = "module"
+                changed = True
+        kept.append(item)
+    if len(kept) != len(items):
+        items[:] = kept
+    return changed
+
+
+def _resource_url_key(url: str | None) -> str:
+    """Return a stable key for matching resources across cache-buster updates."""
+    return str(url or "").split("?", 1)[0]
 
 
 def _ldcs_entity_ids(hass: HomeAssistant) -> list[str]:
@@ -215,6 +254,9 @@ def _build_dashboard_config(
     )
     security_entities = _matching(entities, "door", "lock", "handle", "security", "access")
     asset_entities = _matching(entities, "asset", "tag", "rack_unit")
+    controllable_entities = _controllable_switch_entities(entities)
+    security_control_entities = _matching(controllable_entities, "door", "lock", "handle")
+    contact_control_entities = _matching(controllable_entities, "contact", "dry", "sensor")
     event_entities = _matching(
         entities,
         "alarm",
@@ -227,12 +269,26 @@ def _build_dashboard_config(
         "contact",
     )
     waveform_buttons = _matching(entities, "capture_power_quality_waveform")
-    active_power_entities = _matching(power_entities, "active_power")
+    active_power_entities = _metric_entities(power_entities, "active_power", "reactive_power", "apparent_power")
     inlet_power_entities = _matching(active_power_entities, "inlet")
-    inlet_current_entities = _matching(power_entities, "inlet", "current")
-    inlet_voltage_entities = _matching(power_entities, "inlet", "voltage")
-    inlet_frequency_entities = _matching(power_entities, "frequency")
-    outlet_power_entities = _matching(outlet_entities, "active_power")
+    inlet_current_entities = _metric_entities(
+        _matching_all(power_entities, "sensor.", "inlet"),
+        "current",
+        "peak_current",
+        "current_thd",
+        "inrush_current",
+        "unbalanced",
+    )
+    inlet_voltage_entities = _metric_entities(
+        _matching_all(power_entities, "sensor.", "inlet"),
+        "voltage",
+        "voltage_thd",
+        "unbalanced",
+    )
+    inlet_frequency_entities = _matching_all(power_entities, "sensor.", "inlet", "frequency")
+    outlet_power_entities = _metric_entities(outlet_entities, "active_power", "reactive_power", "apparent_power")
+    outlet_state_entities = _matching(outlet_entities, "outlet_state", "switch.", "power")
+    ocp_entities = _matching(entities, "ocp", "breaker")
     temperature_entities = _matching(environment_entities, "temperature")
     humidity_entities = _matching(environment_entities, "humidity")
     telemetry_samples = _matching(
@@ -247,6 +303,7 @@ def _build_dashboard_config(
         "type": "custom:ldcs-protocol-health-card",
         "title": f"{rack_name} protocol health",
         "entities": {
+            "serviceStatus": _first(entities, "pdu_service_status"),
             "telemetrySamples": telemetry_samples,
             "redfishOutlet": _first(outlet_entities, "redfish") or _first(outlet_entities, "outlet_state"),
             "modbusLayout": _first(entities, "xerus_modbus_tcp_layout"),
@@ -261,6 +318,7 @@ def _build_dashboard_config(
         "max_",
         "reset_sensor_minimum_maximum_values",
     )
+    config_snapshot_entities = _matching(entities, "pdu_config_snapshot")
 
     visual = {
         "type": "custom:raritan-rack-visual-card",
@@ -277,6 +335,27 @@ def _build_dashboard_config(
             "alarmB": _first(event_entities, "critical") or _first(event_entities, "warning"),
             "securityStatus": _first(security_entities, "security_status"),
             "assetInventories": asset_entities[:4],
+            "outletStates": outlet_state_entities[:96],
+            "ocpStates": ocp_entities[:48],
+            "rackPower": inlet_power_entities[:8] or active_power_entities[:8],
+        },
+    }
+    rack_status = {
+        "type": "custom:ldcs-rack-status-card",
+        "title": f"{rack_name} rack status",
+        "entities": {
+            "alarms": event_entities[:48],
+            "securityStatus": _first(security_entities, "security"),
+            "doorStates": _matching(security_entities, "door")[:16],
+            "lockStates": _matching(security_entities, "lock", "handle")[:16],
+            "ocpStates": ocp_entities[:64],
+            "outletStates": outlet_state_entities[:128],
+            "rackPower": inlet_power_entities[:8] or active_power_entities[:8],
+            "inletCurrent": inlet_current_entities[:12],
+            "phaseCurrent": inlet_current_entities[:12],
+            "assetInventories": asset_entities[:6],
+            "serviceStatus": _first(entities, "pdu_service_status"),
+            "controllableStates": controllable_entities[:64],
         },
     }
 
@@ -299,6 +378,24 @@ def _build_dashboard_config(
             "rackRearB": _nth(environment_entities, 2, "temperature"),
         },
     }
+    review_views = _review_concept_views(
+        rack_name=rack_name,
+        frontend_features=frontend_features,
+        visual=visual,
+        protocol_health=protocol_health,
+        power_entities=power_entities,
+        active_power_entities=active_power_entities,
+        inlet_power_entities=inlet_power_entities,
+        inlet_current_entities=inlet_current_entities,
+        inlet_voltage_entities=inlet_voltage_entities,
+        outlet_entities=outlet_entities,
+        outlet_power_entities=outlet_power_entities,
+        all_entities=entities,
+        environment_entities=environment_entities,
+        security_entities=security_entities,
+        asset_entities=asset_entities,
+        event_entities=event_entities,
+    )
 
     return {
         "title": rack_name,
@@ -310,61 +407,21 @@ def _build_dashboard_config(
                 "type": "sections",
                 "max_columns": 4,
                 "sections": [
-                    _section([_heading("Operations Health", "mdi:server-network"), protocol_health], 4),
-                    _section([_heading("Rack Visual", "mdi:server-rack"), visual], 2),
                     _section(
                         [
                             _heading("Rack Status", "mdi:pulse"),
-                            _status_card(
-                                _first(event_entities, "alarm"),
-                                "Rack alarm beacon",
-                                "mdi:alarm-light",
-                                frontend_features,
-                            ),
-                            _status_card(
-                                _first(event_entities, "active_breach_count")
-                                or _first(event_entities, "breach"),
-                                "Active breaches",
-                                "mdi:alert-circle",
-                                frontend_features,
-                            ),
-                            _status_card(
-                                _first(security_entities, "security"),
-                                "Rack security",
-                                "mdi:shield-lock",
-                                frontend_features,
-                            ),
-                            _status_card(
-                                _first(entities, "xerus_modbus_tcp_layout"),
-                                "Modbus layout",
-                                "mdi:transit-connection-variant",
-                                frontend_features,
-                            ),
-                        ]
+                            rack_status,
+                        ],
+                        2,
                     ),
+                    _section([_heading("Rack Visual", "mdi:server-rack"), visual], 2),
                     _section(
                         [
-                            _heading("Rack Load", "mdi:gauge"),
-                            _power_gauge(
-                                inlet_power_entities[0] if inlet_power_entities else _first(active_power_entities),
-                                "Inlet power",
-                                frontend_features,
-                                maximum=10000,
-                            ),
-                            _power_gauge(
-                                inlet_current_entities[0] if inlet_current_entities else _first(power_entities, "current"),
-                                "Inlet current",
-                                frontend_features,
-                                maximum=32,
-                            ),
-                            _power_gauge(
-                                inlet_voltage_entities[0] if inlet_voltage_entities else _first(power_entities, "voltage"),
-                                "Voltage",
-                                frontend_features,
-                                maximum=260,
-                                thresholds=(210, 240),
-                            ),
+                            _heading("Operations Health", "mdi:server-network"),
+                            protocol_health,
+                            _entities_card("Active alarms and recent events", event_entities[:10]),
                         ],
+                        2,
                     ),
                     _section(
                         [
@@ -372,24 +429,12 @@ def _build_dashboard_config(
                             _navigation_card("Power quality", "mdi:sine-wave", "/ldcs-" + _slug(rack_name) + "/power", frontend_features),
                             _navigation_card("Outlets", "mdi:power-socket-au", "/ldcs-" + _slug(rack_name) + "/outlets", frontend_features),
                             _navigation_card("Security & assets", "mdi:shield-lock", "/ldcs-" + _slug(rack_name) + "/security-assets", frontend_features),
-                            _entities_card("Active alarms and breaches", event_entities[:8]),
+                            _navigation_card("Events & contacts", "mdi:electric-switch", "/ldcs-" + _slug(rack_name) + "/events", frontend_features),
                         ]
-                    ),
-                    _section(
-                        [
-                            _heading("Outlet Snapshot", "mdi:power-socket-au"),
-                            *_outlet_control_cards(outlet_entities, frontend_features, _slug(rack_name))[:8],
-                            _navigation_card(
-                                "All outlets",
-                                "mdi:power-strip",
-                                "/ldcs-" + _slug(rack_name) + "/outlets",
-                                frontend_features,
-                            ),
-                        ],
-                        3,
                     ),
                 ],
             },
+            *review_views,
             {
                 "title": "Power",
                 "path": "power",
@@ -408,12 +453,12 @@ def _build_dashboard_config(
                                         10000,
                                     ),
                                     (
-                                        inlet_current_entities[0] if inlet_current_entities else _first(power_entities, "current"),
+                                        inlet_current_entities[0] if inlet_current_entities else _first_sensor(power_entities, "current"),
                                         "Inlet current",
                                         32,
                                     ),
                                     (
-                                        inlet_voltage_entities[0] if inlet_voltage_entities else _first(power_entities, "voltage"),
+                                        inlet_voltage_entities[0] if inlet_voltage_entities else _first_sensor(power_entities, "voltage"),
                                         "Voltage",
                                         260,
                                     ),
@@ -421,11 +466,21 @@ def _build_dashboard_config(
                                 frontend_features,
                             ),
                             _history(
-                                "Power history",
-                                active_power_entities[:8],
+                                "Rack electrical history",
+                                _electrical_history_entities(
+                                    inlet_power_entities or active_power_entities,
+                                    inlet_current_entities,
+                                    inlet_voltage_entities,
+                                    limit=18,
+                                ),
                             ),
                         ],
                         2,
+                    ),
+                    *_inlet_history_sections(
+                        inlet_power_entities or active_power_entities,
+                        inlet_current_entities,
+                        inlet_voltage_entities,
                     ),
                     _section(
                         [
@@ -526,6 +581,7 @@ def _build_dashboard_config(
                             _status_card(_first(security_entities, "front", "door"), "Front door", "mdi:door-open", frontend_features),
                             _status_card(_first(security_entities, "rear", "door"), "Rear door", "mdi:door-open", frontend_features),
                             _status_card(_first(security_entities, "lock"), "Smart lock", "mdi:lock-smart", frontend_features),
+                            _entities_card("Controllable rack handles and locks", security_control_entities[:18]),
                             _entities_card("Security detail", security_entities[:18]),
                         ]
                     ),
@@ -559,7 +615,7 @@ def _build_dashboard_config(
                             _heading("Dry Contacts", "mdi:electric-switch-closed"),
                             _entities_card(
                                 "Contacts",
-                                _matching(event_entities, "contact")[:24],
+                                contact_control_entities[:24] + _matching(event_entities, "contact")[:24],
                             ),
                         ],
                         2,
@@ -577,8 +633,205 @@ def _build_dashboard_config(
                     ),
                 ],
             },
+            {
+                "title": "PDU Config",
+                "path": "pdu-config",
+                "icon": "mdi:cog-transfer",
+                "type": "sections",
+                "max_columns": 4,
+                "sections": [
+                    _section(
+                        [
+                            _heading("Configuration Snapshot", "mdi:cog-transfer"),
+                            _pdu_config_card(
+                                f"{rack_name} PDU configuration",
+                                config_snapshot_entities,
+                            ),
+                        ],
+                        4,
+                    ),
+                    _section(
+                        [
+                            _heading("Protocol Health", "mdi:server-network"),
+                            protocol_health,
+                        ],
+                        4,
+                    ),
+                    _section(
+                        [
+                            _heading("Config Entities", "mdi:database-cog"),
+                            _entities_card(
+                                "Snapshot sources",
+                                config_snapshot_entities
+                                + _matching(entities, "pdu_service_status", "rack_security_status")[:12],
+                            ),
+                        ],
+                        2,
+                    ),
+                ],
+            },
         ],
     }
+
+
+def _review_concept_views(
+    *,
+    rack_name: str,
+    frontend_features: dict[str, bool],
+    visual: dict,
+    protocol_health: dict,
+    power_entities: list[str],
+    active_power_entities: list[str],
+    inlet_power_entities: list[str],
+    inlet_current_entities: list[str],
+    inlet_voltage_entities: list[str],
+    outlet_entities: list[str],
+    outlet_power_entities: list[str],
+    all_entities: list[str],
+    environment_entities: list[str],
+    security_entities: list[str],
+    asset_entities: list[str],
+    event_entities: list[str],
+) -> list[dict]:
+    """Build optional dashboard concept tabs for visual review."""
+    pdu_a_power = _matching(outlet_power_entities, "pdu_a")
+    pdu_b_power = _matching(outlet_power_entities, "pdu_b")
+    pdu_a_outlets = _matching(outlet_entities, "pdu_a")
+    pdu_b_outlets = _matching(outlet_entities, "pdu_b")
+    if not pdu_a_power and outlet_power_entities:
+        split = max(1, len(outlet_power_entities) // 2)
+        pdu_a_power = outlet_power_entities[:split]
+        pdu_b_power = outlet_power_entities[split:]
+    if not pdu_a_outlets and outlet_entities:
+        split = max(1, len(outlet_entities) // 2)
+        pdu_a_outlets = outlet_entities[:split]
+        pdu_b_outlets = outlet_entities[split:]
+
+    alarm_status = _first(event_entities, "alarm")
+    active_breaches = _first(event_entities, "active_breach_count") or _first(event_entities, "breach")
+    warning_count = _first(event_entities, "warning")
+    critical_count = _first(event_entities, "critical")
+    service_status = _first(all_entities, "pdu_service_status")
+    dashboard_slug = _slug(rack_name)
+
+    return [
+        {
+            "title": "Review Command Wall",
+            "path": "review-command-wall",
+            "icon": "mdi:view-dashboard-variant",
+            "type": "sections",
+            "max_columns": 4,
+            "sections": [
+                _section([_heading("Containment", "mdi:server-rack"), visual], 2),
+                _section(
+                    [
+                        _heading("Live Status", "mdi:pulse"),
+                        _status_card(alarm_status, "Rack alarm beacon", "mdi:alarm-light", frontend_features),
+                        _status_card(active_breaches, "Active breaches", "mdi:alert-circle", frontend_features),
+                        _status_card(_first(security_entities, "security"), "Rack security", "mdi:shield-lock", frontend_features),
+                        _status_card(service_status, "PDU services", "mdi:server-network", frontend_features),
+                        *_gauge_cards(
+                            [
+                                (inlet_power_entities[0] if inlet_power_entities else _first(active_power_entities), "Rack W", 12000),
+                                (inlet_current_entities[0] if inlet_current_entities else _first_sensor(power_entities, "current"), "Rack A", 64),
+                            ],
+                            frontend_features,
+                        ),
+                    ]
+                ),
+                _section(
+                    [
+                        _heading("Trends", "mdi:chart-line"),
+                        _history(
+                            "Rack inlet W/A/V",
+                            _electrical_history_entities(
+                                inlet_power_entities or active_power_entities,
+                                inlet_current_entities,
+                                inlet_voltage_entities,
+                                limit=18,
+                            ),
+                        ),
+                    ],
+                    2,
+                ),
+            ],
+        },
+        {
+            "title": "Review Outlet Ops",
+            "path": "review-outlet-ops",
+            "icon": "mdi:power-socket-au",
+            "type": "sections",
+            "max_columns": 4,
+            "sections": [
+                _section(
+                    [
+                        _heading("PDU A Loads", "mdi:power-strip"),
+                        _outlet_load_card("PDU A outlet load", pdu_a_power[:12]),
+                        *_outlet_control_cards(pdu_a_outlets, frontend_features, dashboard_slug)[:9],
+                    ],
+                    2,
+                ),
+                _section(
+                    [
+                        _heading("PDU B Loads", "mdi:power-strip"),
+                        _outlet_load_card("PDU B outlet load", pdu_b_power[:12]),
+                        *_outlet_control_cards(pdu_b_outlets, frontend_features, dashboard_slug)[:9],
+                    ],
+                    2,
+                ),
+                _section(
+                    [
+                        _heading("Combined History", "mdi:chart-areaspline"),
+                        _history(
+                            "Outlet W/A/V summary",
+                            _electrical_history_entities(
+                                outlet_power_entities,
+                                _metric_entities(outlet_entities, "current", "peak_current", "current_thd", "inrush_current"),
+                                _metric_entities(outlet_entities, "voltage", "voltage_thd"),
+                                limit=24,
+                            ),
+                        ),
+                    ],
+                    4,
+                ),
+            ],
+        },
+        {
+            "title": "Review Alarms & Access",
+            "path": "review-alarms-access",
+            "icon": "mdi:alarm-light-outline",
+            "type": "sections",
+            "max_columns": 4,
+            "sections": [
+                _section([_heading("Rack Security Visual", "mdi:shield-home"), visual], 2),
+                _section(
+                    [
+                        _heading("Alarm Stack", "mdi:alarm-light"),
+                        _status_card(alarm_status, "Alarm status", "mdi:alarm-light", frontend_features),
+                        _status_card(warning_count, "Warnings", "mdi:alert", frontend_features),
+                        _status_card(critical_count, "Critical", "mdi:alert-octagon", frontend_features),
+                        _entities_card("Threshold and event detail", event_entities[:24]),
+                    ]
+                ),
+                _section(
+                    [
+                        _heading("Access & Assets", "mdi:badge-account-horizontal"),
+                        _status_card(_first(security_entities, "front", "door"), "Front door", "mdi:door-open", frontend_features),
+                        _status_card(_first(security_entities, "rear", "door"), "Rear door", "mdi:door-open", frontend_features),
+                        _status_card(_first(security_entities, "lock"), "Handle lock", "mdi:lock-smart", frontend_features),
+                        _entities_card("Rack security entities", security_entities[:18]),
+                    ]
+                ),
+                _section(
+                    [
+                        _heading("Asset Strip", "mdi:tag-multiple"),
+                        _entities_card("Rack occupancy sources", asset_entities[:24]),
+                    ],
+                    2,
+                ),
+            ],
+        },
+    ]
 
 
 def _outlet_sections(
@@ -595,7 +848,7 @@ def _outlet_sections(
         ]
     outlet_cards = _outlet_control_cards(outlet_entities, frontend_features, dashboard_slug)
     outlet_power_entities = _matching(outlet_entities, "active_power")
-    outlet_current_entities = _matching(outlet_entities, "current")
+    outlet_current_entities = _metric_entities(outlet_entities, "current", "peak_current", "current_thd", "inrush_current")
     outlet_state_entities = _matching(outlet_entities, "state", "power")
     sections = []
     for index in range(0, min(len(outlet_cards), 48), 6):
@@ -629,26 +882,23 @@ def _outlet_sections(
     return sections
 
 
+def _outlet_load_card(title: str, entity_ids: list[str]) -> dict | None:
+    if not entity_ids:
+        return None
+    return {"type": "custom:raritan-outlet-load-card", "title": title, "entities": entity_ids}
+
+
+def _pdu_config_card(title: str, entity_ids: list[str]) -> dict | None:
+    if not entity_ids:
+        return _entities_card(title, [])
+    return {"type": "custom:ldcs-pdu-config-card", "title": title, "entities": entity_ids}
+
+
 def _outlet_history_sections(outlet_entities: list[str]) -> list[dict]:
     """Build dedicated outlet history sections."""
     outlet_power_entities = _matching(outlet_entities, "active_power")
-    outlet_current_entities = _matching(outlet_entities, "current")
-    sections = [
-        _section(
-            [
-                _heading("Outlet Power", "mdi:flash"),
-                _history("Outlet power history", outlet_power_entities[:12]),
-            ],
-            2,
-        ),
-        _section(
-            [
-                _heading("Outlet Current", "mdi:current-ac"),
-                _history("Outlet current history", outlet_current_entities[:12]),
-            ],
-            2,
-        ),
-    ]
+    outlet_current_entities = _metric_entities(outlet_entities, "current", "peak_current", "current_thd", "inrush_current")
+    outlet_voltage_entities = _metric_entities(outlet_entities, "voltage", "voltage_thd")
     outlet_numbers = sorted(
         {
             number
@@ -656,6 +906,24 @@ def _outlet_history_sections(outlet_entities: list[str]) -> list[dict]:
             if (number := _outlet_number(entity_id)) is not None
         }
     )
+    sections = [
+        _section(
+            [
+                _heading("Outlet Electrical Summary", "mdi:chart-line"),
+                _history(
+                    "Outlet W/A/V summary",
+                    _electrical_history_entities(
+                        outlet_power_entities,
+                        outlet_current_entities,
+                        outlet_voltage_entities,
+                        numbers=outlet_numbers[:8],
+                        number_parser=_outlet_number,
+                    ),
+                ),
+            ],
+            4,
+        ),
+    ]
     for number in outlet_numbers[:24]:
         history_entities = [
             entity_id
@@ -702,11 +970,72 @@ def _history(title: str, entity_ids: list[str]) -> dict | None:
     return {
         "type": "history-graph",
         "title": title,
-        "hours_to_show": 24,
+        "hours_to_show": HISTORY_HOURS_TO_SHOW,
         "entities": [
             {"entity": entity_id, "name": _history_name(entity_id)} for entity_id in entity_ids
         ],
     }
+
+
+def _inlet_history_sections(
+    power_entities: list[str],
+    current_entities: list[str],
+    voltage_entities: list[str],
+) -> list[dict]:
+    """Build W/A/V history sections for each inlet."""
+    inlet_numbers = sorted(
+        {
+            number
+            for entity_id in power_entities + current_entities + voltage_entities
+            if (number := _inlet_number(entity_id)) is not None
+        }
+    )
+    sections = []
+    for number in inlet_numbers[:8]:
+        history_entities = _electrical_history_entities(
+            power_entities,
+            current_entities,
+            voltage_entities,
+            numbers=[number],
+            number_parser=_inlet_number,
+        )
+        if history_entities:
+            sections.append(
+                _section(
+                    [
+                        _heading(f"Inlet {number} History", "mdi:transmission-tower"),
+                        _history(f"Inlet {number} W/A/V", history_entities),
+                    ],
+                    2,
+                )
+            )
+    return sections
+
+
+def _electrical_history_entities(
+    power_entities: list[str],
+    current_entities: list[str],
+    voltage_entities: list[str],
+    *,
+    numbers: list[int] | None = None,
+    number_parser=None,
+    limit: int = 24,
+) -> list[str]:
+    """Return W/A/V entities grouped by outlet or inlet number where possible."""
+    if numbers and number_parser is not None:
+        entities = []
+        for number in numbers:
+            entities.extend(
+                entity_id
+                for entity_id in (
+                    _first_by_number(power_entities, number, number_parser),
+                    _first_by_number(current_entities, number, number_parser),
+                    _first_by_number(voltage_entities, number, number_parser),
+                )
+                if entity_id
+            )
+        return entities[:limit]
+    return (power_entities[: limit // 3] + current_entities[: limit // 3] + voltage_entities[: limit // 3])[:limit]
 
 
 def _gauge_cards(
@@ -1015,6 +1344,24 @@ def _outlet_number(entity_id: str) -> int | None:
     return int(match.group(1))
 
 
+def _inlet_number(entity_id: str) -> int | None:
+    match = re.search(r"inlet[_-](\d+)", entity_id.lower())
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _first_by_number(
+    entity_ids: list[str],
+    number: int,
+    number_parser,
+) -> str | None:
+    for entity_id in entity_ids:
+        if number_parser(entity_id) == number:
+            return entity_id
+    return None
+
+
 def _history_name(entity_id: str) -> str:
     lowered = entity_id.lower()
     outlet_number = _outlet_number(lowered)
@@ -1026,9 +1373,8 @@ def _history_name(entity_id: str) -> str:
         if "voltage" in lowered:
             return f"Outlet {outlet_number} V"
         return f"Outlet {outlet_number}"
-    inlet_match = re.search(r"inlet[_-](\d+)", lowered)
-    if inlet_match:
-        inlet_number = int(inlet_match.group(1))
+    inlet_number = _inlet_number(lowered)
+    if inlet_number is not None:
         if "active_power" in lowered:
             return f"Inlet {inlet_number} W"
         if "current" in lowered:
@@ -1076,12 +1422,53 @@ def _matching(entities: list[str], *needles: str) -> list[str]:
     return sorted(set(values), key=_natural_sort_key)
 
 
+def _matching_all(entities: list[str], *needles: str) -> list[str]:
+    values = []
+    for entity_id in entities:
+        lowered = entity_id.lower()
+        if all(needle in lowered for needle in needles):
+            values.append(entity_id)
+    return sorted(set(values), key=_natural_sort_key)
+
+
+def _metric_entities(entities: list[str], include: str, *exclude: str) -> list[str]:
+    """Return metric entities while excluding similarly named derived values."""
+    values = []
+    include_token = f"_{include}"
+    for entity_id in entities:
+        lowered = entity_id.lower()
+        if include_token not in lowered and not lowered.endswith(include):
+            continue
+        if any(token in lowered for token in exclude):
+            continue
+        values.append(entity_id)
+    return sorted(set(values), key=_natural_sort_key)
+
+
+def _controllable_switch_entities(entities: list[str]) -> list[str]:
+    """Return writable non-outlet switch entities for rack handles and dry contacts."""
+    controls = []
+    for entity_id in entities:
+        lowered = entity_id.lower()
+        if not lowered.startswith("switch."):
+            continue
+        if "_outlet_" in lowered and lowered.endswith("_power"):
+            continue
+        if any(token in lowered for token in ("door", "handle", "lock", "contact", "dry", "sensor")):
+            controls.append(entity_id)
+    return sorted(set(controls), key=_natural_sort_key)
+
+
 def _first(entities: list[str], *needles: str) -> str | None:
     for entity_id in entities:
         lowered = entity_id.lower()
         if all(needle in lowered for needle in needles):
             return entity_id
     return None
+
+
+def _first_sensor(entities: list[str], *needles: str) -> str | None:
+    return _first([entity_id for entity_id in entities if entity_id.startswith("sensor.")], *needles)
 
 
 def _nth(entities: list[str], index: int, *needles: str) -> str | None:

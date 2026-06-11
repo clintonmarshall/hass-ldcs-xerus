@@ -80,4 +80,6 @@ class RaritanWaveformCard extends HTMLElement {
   }
 }
 
-customElements.define("raritan-waveform-card", RaritanWaveformCard);
+if (!customElements.get("raritan-waveform-card")) {
+  customElements.define("raritan-waveform-card", RaritanWaveformCard);
+}

@@ -15,6 +15,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .device_tree import async_register_xerus_device_tree
 from .raritan_client import SensorKind
 from .usystems_rdhx import RDHX_SENSORS
 
@@ -71,7 +72,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
         return
 
     async def _async_discover_and_add():
-        await hass.async_add_executor_job(client.discover)
+        if not client.sensor_descriptors:
+            await hass.async_add_executor_job(client.discover)
+        async_register_xerus_device_tree(hass, entry, client)
         entities = [
             RaritanSensor(coordinator, client, entry.entry_id, descriptor)
             for descriptor in client.sensor_descriptors

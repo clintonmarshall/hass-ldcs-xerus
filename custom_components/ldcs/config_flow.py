@@ -19,6 +19,14 @@ from .const import (
     CONF_RACK_POSITION,
     CONF_RACK_ROLE,
     CONF_VERIFY_SSL,
+    CONF_XERUS_MQTT_DATAPUSH,
+    CONF_XERUS_MQTT_HOST,
+    CONF_XERUS_MQTT_PASSWORD,
+    CONF_XERUS_MQTT_PORT,
+    CONF_XERUS_MQTT_TLS,
+    CONF_XERUS_MQTT_TOPIC_PREFIX,
+    CONF_XERUS_MQTT_USERNAME,
+    CONF_XERUS_TOPOLOGY,
     DEFAULT_CREATE_DASHBOARD,
     DEFAULT_MODBUS_PORT,
     DEFAULT_MODBUS_SLAVE_ID,
@@ -27,6 +35,10 @@ from .const import (
     DEFAULT_RACK_NAME,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_VERIFY_SSL,
+    DEFAULT_XERUS_MQTT_DATAPUSH,
+    DEFAULT_XERUS_MQTT_PORT,
+    DEFAULT_XERUS_MQTT_TLS,
+    DEFAULT_XERUS_TOPOLOGY,
     DOMAIN,
     PRODUCT_RACK_DASHBOARD,
     PRODUCT_USYSTEMS_RDHX,
@@ -76,12 +88,9 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except RaritanError:
                 errors["base"] = "cannot_connect"
             else:
-                serial = metadata.get("serial_number") or user_input[CONF_HOST]
-                await self.async_set_unique_id(serial)
-                self._abort_if_unique_id_configured()
-                title = metadata.get("name") or metadata.get("model") or user_input[CONF_HOST]
-                user_input[CONF_PRODUCT_TYPE] = PRODUCT_XERUS_PDU
-                return self.async_create_entry(title=title, data=user_input)
+                self._xerus_user_input = user_input
+                self._xerus_metadata = metadata
+                return await self.async_step_xerus_mqtt()
 
         schema = vol.Schema(
             {
@@ -100,7 +109,7 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Coerce(int), vol.Range(min=5, max=3600)
                 ),
                 vol.Optional(CONF_RACK_NAME, default=DEFAULT_RACK_NAME): str,
-                vol.Optional(CONF_RACK_ROLE, default="left_pdu"): _rack_role_selector(),
+                vol.Optional(CONF_XERUS_TOPOLOGY, default=DEFAULT_XERUS_TOPOLOGY): _xerus_topology_selector(),
                 vol.Optional(CONF_RACK_POSITION, default=""): str,
                 vol.Optional(CONF_CREATE_DASHBOARD, default=DEFAULT_CREATE_DASHBOARD): bool,
             }
@@ -110,6 +119,26 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=schema,
             errors=errors,
         )
+
+    async def async_step_xerus_mqtt(self, user_input=None):
+        """Configure optional Xerus MQTT Data Push for the PDU."""
+        base_input = getattr(self, "_xerus_user_input", None)
+        metadata = getattr(self, "_xerus_metadata", {})
+        if base_input is None:
+            return await self.async_step_xerus_pdu()
+
+        if user_input is not None:
+            merged = {**base_input, **user_input}
+            serial = metadata.get("serial_number") or merged[CONF_HOST]
+            await self.async_set_unique_id(serial)
+            self._abort_if_unique_id_configured()
+            title = merged.get(CONF_RACK_NAME) or metadata.get("name") or metadata.get("model") or merged[CONF_HOST]
+            merged[CONF_PRODUCT_TYPE] = PRODUCT_XERUS_PDU
+            merged[CONF_RACK_ROLE] = merged.get(CONF_XERUS_TOPOLOGY, DEFAULT_XERUS_TOPOLOGY)
+            return self.async_create_entry(title=title, data=merged)
+
+        schema = vol.Schema(_xerus_mqtt_fields())
+        return self.async_show_form(step_id="xerus_mqtt", data_schema=schema)
 
     async def async_step_usystems_rdhx(self, user_input=None):
         """Add a USystems RDHx cooling device placeholder."""
@@ -179,6 +208,8 @@ class LdcsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         """Manage options."""
         if user_input is not None:
+            if self._config_entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_XERUS_PDU) == PRODUCT_XERUS_PDU:
+                user_input[CONF_RACK_ROLE] = user_input.get(CONF_XERUS_TOPOLOGY, self._config_entry.data.get(CONF_RACK_ROLE))
             return self.async_create_entry(title="", data=user_input)
 
         product_type = self._config_entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_XERUS_PDU)
@@ -220,6 +251,62 @@ class LdcsOptionsFlow(config_entries.OptionsFlow):
             fields = {
                 vol.Optional(CONF_PROFILE, default=profile): _profile_selector(),
                 **fields,
+                vol.Optional(
+                    CONF_XERUS_TOPOLOGY,
+                    default=self._config_entry.options.get(
+                        CONF_XERUS_TOPOLOGY,
+                        self._config_entry.data.get(CONF_XERUS_TOPOLOGY, self._config_entry.data.get(CONF_RACK_ROLE, DEFAULT_XERUS_TOPOLOGY)),
+                    ),
+                ): _xerus_topology_selector(),
+                vol.Optional(
+                    CONF_XERUS_MQTT_DATAPUSH,
+                    default=self._config_entry.options.get(
+                        CONF_XERUS_MQTT_DATAPUSH,
+                        self._config_entry.data.get(CONF_XERUS_MQTT_DATAPUSH, DEFAULT_XERUS_MQTT_DATAPUSH),
+                    ),
+                ): bool,
+                vol.Optional(
+                    CONF_XERUS_MQTT_HOST,
+                    default=self._config_entry.options.get(
+                        CONF_XERUS_MQTT_HOST,
+                        self._config_entry.data.get(CONF_XERUS_MQTT_HOST, ""),
+                    ),
+                ): str,
+                vol.Optional(
+                    CONF_XERUS_MQTT_PORT,
+                    default=self._config_entry.options.get(
+                        CONF_XERUS_MQTT_PORT,
+                        self._config_entry.data.get(CONF_XERUS_MQTT_PORT, DEFAULT_XERUS_MQTT_PORT),
+                    ),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+                vol.Optional(
+                    CONF_XERUS_MQTT_TLS,
+                    default=self._config_entry.options.get(
+                        CONF_XERUS_MQTT_TLS,
+                        self._config_entry.data.get(CONF_XERUS_MQTT_TLS, DEFAULT_XERUS_MQTT_TLS),
+                    ),
+                ): bool,
+                vol.Optional(
+                    CONF_XERUS_MQTT_USERNAME,
+                    default=self._config_entry.options.get(
+                        CONF_XERUS_MQTT_USERNAME,
+                        self._config_entry.data.get(CONF_XERUS_MQTT_USERNAME, ""),
+                    ),
+                ): str,
+                vol.Optional(
+                    CONF_XERUS_MQTT_PASSWORD,
+                    default=self._config_entry.options.get(
+                        CONF_XERUS_MQTT_PASSWORD,
+                        self._config_entry.data.get(CONF_XERUS_MQTT_PASSWORD, ""),
+                    ),
+                ): str,
+                vol.Optional(
+                    CONF_XERUS_MQTT_TOPIC_PREFIX,
+                    default=self._config_entry.options.get(
+                        CONF_XERUS_MQTT_TOPIC_PREFIX,
+                        self._config_entry.data.get(CONF_XERUS_MQTT_TOPIC_PREFIX, ""),
+                    ),
+                ): str,
             }
         schema = vol.Schema(fields)
         return self.async_show_form(step_id="init", data_schema=schema)
@@ -260,6 +347,21 @@ def _profile_selector() -> selector.SelectSelector:
     )
 
 
+def _xerus_mqtt_fields() -> dict:
+    """Return the optional Xerus MQTT Data Push setup fields."""
+    return {
+        vol.Optional(CONF_XERUS_MQTT_DATAPUSH, default=DEFAULT_XERUS_MQTT_DATAPUSH): bool,
+        vol.Optional(CONF_XERUS_MQTT_HOST, default=""): str,
+        vol.Optional(CONF_XERUS_MQTT_PORT, default=DEFAULT_XERUS_MQTT_PORT): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=65535)
+        ),
+        vol.Optional(CONF_XERUS_MQTT_TLS, default=DEFAULT_XERUS_MQTT_TLS): bool,
+        vol.Optional(CONF_XERUS_MQTT_USERNAME, default=""): str,
+        vol.Optional(CONF_XERUS_MQTT_PASSWORD, default=""): str,
+        vol.Optional(CONF_XERUS_MQTT_TOPIC_PREFIX, default=""): str,
+    }
+
+
 def _rack_role_selector() -> selector.SelectSelector:
     """Return the rack role selector."""
     return _select(
@@ -270,5 +372,16 @@ def _rack_role_selector() -> selector.SelectSelector:
             ("busway", "Busway or tap-off"),
             ("sensor_strip", "Sensor or asset strip"),
             ("rack", "Rack-level device"),
+        ]
+    )
+
+
+def _xerus_topology_selector() -> selector.SelectSelector:
+    """Return the Xerus rack topology selector."""
+    return _select(
+        [
+            ("pdu_link_master", "PDU Link master - discover linked PDUs from this device"),
+            ("standalone", "Standalone PDU - this device is the whole rack power view"),
+            ("separate_rack_pdu", "Separate PDU in the same rack - add each PDU individually"),
         ]
     )

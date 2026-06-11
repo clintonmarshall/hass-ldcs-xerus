@@ -19,6 +19,8 @@ class LdcsProtocolHealthCard extends HTMLElement {
     const stateObj = (id) => (id && this._hass.states[id] ? this._hass.states[id] : null);
     const state = (id) => stateObj(id)?.state || "unknown";
     const attrs = (id) => stateObj(id)?.attributes || {};
+    const serviceAttrs = attrs(entities.serviceStatus);
+    const serviceMap = serviceAttrs.services || {};
     const samples = entities.telemetrySamples || [];
     const sampleAttrs = samples.map((id) => attrs(id));
     const hasPrometheus = sampleAttrs.some((item) => item.telemetry_source === "prometheus");
@@ -29,38 +31,68 @@ class LdcsProtocolHealthCard extends HTMLElement {
     const redfishKnown = Boolean(entities.redfishOutlet) && redfishState !== "unknown" && redfishState !== "unavailable";
     const mqttLabel = entities.mqttTopic || "raritan/#";
     const protocols = [
-      {
+      serviceProtocol(serviceMap, "json_rpc", {
         name: "JSON-RPC",
         detail: hasJsonRpc ? "Discovery, metadata, alarms, extrema" : "Waiting for telemetry",
         state: hasJsonRpc ? "online" : "pending",
         icon: "api",
-      },
-      {
+      }),
+      serviceProtocol(serviceMap, "prometheus", {
         name: "Prometheus",
         detail: hasPrometheus ? "Polling matched telemetry samples" : "Fallback to JSON-RPC active",
         state: hasPrometheus ? "online" : "fallback",
         icon: "timeline",
-      },
-      {
+      }),
+      serviceProtocol(serviceMap, "mqtt_datapush", {
         name: "MQTT Datapush",
         detail: `Refresh trigger ${mqttLabel}`,
         state: "configured",
         icon: "broadcast",
-      },
-      {
+      }),
+      serviceProtocol(serviceMap, "redfish", {
         name: "Redfish",
         detail: redfishKnown ? `Outlet control state: ${redfishState}` : "No controllable outlet entity yet",
         state: redfishKnown ? "online" : "pending",
         icon: "power",
-      },
-      {
+      }),
+      serviceProtocol(serviceMap, "modbus_tcp", {
         name: "Modbus/TCP",
         detail: modbusState === "available"
           ? `${modbusAttrs.outlet_count || 0} outlets, ${modbusAttrs.inlet_count || 0} inlets`
           : "Disabled, blocked, or not yet discovered",
         state: modbusState === "available" ? "online" : "optional",
         icon: "registers",
-      },
+      }),
+      serviceProtocol(serviceMap, "modbus_rtu", {
+        name: "Modbus/RTU",
+        detail: "Serial gateway configuration",
+        state: "optional",
+        icon: "registers",
+      }),
+      serviceProtocol(serviceMap, "snmp_v1_v2c", {
+        name: "SNMP v1/v2c",
+        detail: "Configuration read via JSON-RPC",
+        state: "optional",
+        icon: "timeline",
+      }),
+      serviceProtocol(serviceMap, "snmp_v3", {
+        name: "SNMPv3",
+        detail: "Configuration read via JSON-RPC",
+        state: "optional",
+        icon: "timeline",
+      }),
+      serviceProtocol(serviceMap, "ssh", {
+        name: "SSH",
+        detail: "Remote shell service",
+        state: "optional",
+        icon: "terminal",
+      }),
+      serviceProtocol(serviceMap, "https", {
+        name: "HTTPS",
+        detail: "Xerus web/API transport",
+        state: "optional",
+        icon: "lock",
+      }),
     ];
     const online = protocols.filter((item) => item.state === "online" || item.state === "configured").length;
 
@@ -125,9 +157,43 @@ function protocolTemplate(item) {
   `;
 }
 
+function serviceProtocol(serviceMap, key, fallback) {
+  const service = serviceMap[key] || {};
+  if (!Object.keys(service).length) return fallback;
+  const reachable = service.reachable;
+  const configured = service.configured;
+  let state = fallback.state;
+  if (reachable === true) state = "online";
+  else if (configured === true && reachable !== false) state = "configured";
+  else if (configured === true && reachable === false) state = "blocked";
+  else if (configured === false) state = "disabled";
+  const parts = [];
+  if (service.port) parts.push(`port ${service.port}`);
+  if (configured === true) parts.push("enabled");
+  if (configured === false) parts.push("disabled");
+  if (reachable === true) parts.push("reachable");
+  if (reachable === false) parts.push("not reachable");
+  if (service.readonly === true) parts.push("read only");
+  if (service.password_auth === true) parts.push("password auth");
+  if (service.public_key_auth === true) parts.push("key auth");
+  if (key === "mqtt_datapush") {
+    if (service.managed === true) parts.push("managed");
+    if (Number(service.message_count || 0) > 0) parts.push(`${service.message_count} messages`);
+    if (service.last_topic) parts.push(`last ${service.last_topic}`);
+  }
+  const detail = parts.length ? parts.join(", ") : service.detail || fallback.detail;
+  return { ...fallback, detail, state };
+}
+
 function protocolColors(state) {
   if (state === "online" || state === "configured") {
     return { badge: "#16a34a", glow: "rgba(22,163,74,.32)", state: "#16a34a" };
+  }
+  if (state === "disabled") {
+    return { badge: "#475569", glow: "rgba(71,85,105,.22)", state: "#64748b" };
+  }
+  if (state === "blocked") {
+    return { badge: "#dc2626", glow: "rgba(220,38,38,.28)", state: "#dc2626" };
   }
   if (state === "fallback") {
     return { badge: "#0ea5e9", glow: "rgba(14,165,233,.3)", state: "#0284c7" };
@@ -145,6 +211,8 @@ function iconSvg(name) {
     broadcast: '<svg viewBox="0 0 24 24"><path d="M4.9 19.1a10 10 0 0 1 0-14.2"/><path d="M8.5 15.5a5 5 0 0 1 0-7"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19.1 4.9a10 10 0 0 1 0 14.2"/><circle cx="12" cy="12" r="1"/></svg>',
     power: '<svg viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
     registers: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/></svg>',
+    terminal: '<svg viewBox="0 0 24 24"><path d="m7 8 4 4-4 4"/><path d="M13 16h4"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>',
+    lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>',
   };
   return icons[name] || icons.api;
 }

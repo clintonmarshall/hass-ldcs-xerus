@@ -89,4 +89,6 @@ function escapeHtml(value) {
   })[char]);
 }
 
-customElements.define("raritan-outlet-load-card", RaritanOutletLoadCard);
+if (!customElements.get("raritan-outlet-load-card")) {
+  customElements.define("raritan-outlet-load-card", RaritanOutletLoadCard);
+}
