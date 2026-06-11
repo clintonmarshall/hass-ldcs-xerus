@@ -32,7 +32,8 @@ except ImportError:
 
 from .prometheus import PrometheusCollector
 from .redfish import RedfishClient
-from .const import DOMAIN
+from .xerus_modbus import XerusModbusClient
+from .const import DEFAULT_MODBUS_PORT, DEFAULT_MODBUS_SLAVE_ID, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -214,6 +215,8 @@ class RaritanClient:
         verify_ssl: bool = False,
         profile: str = "basic",
         device_identifier: str | None = None,
+        modbus_port: int = DEFAULT_MODBUS_PORT,
+        modbus_slave_id: int = DEFAULT_MODBUS_SLAVE_ID,
     ):
         """Initialize the client."""
         self.host = host
@@ -231,6 +234,7 @@ class RaritanClient:
         self.alarm_manager = None
         self.prometheus = PrometheusCollector(host, username, password, verify_ssl)
         self.redfish = RedfishClient(host, username, password, verify_ssl)
+        self.modbus = XerusModbusClient(host, modbus_port, modbus_slave_id)
         self._lock = RLock()
         self.sensor_descriptors: list[SensorDescriptor] = []
         self._descriptors_by_key: dict[str, SensorDescriptor] = {}
@@ -348,6 +352,7 @@ class RaritanClient:
                 self._collect_asset_logger(descriptors)
                 self._collect_alarm_summary(descriptors)
                 self._collect_security_summary(descriptors)
+                self._collect_modbus_inventory(descriptors)
                 self.sensor_descriptors = descriptors
                 self._descriptors_by_key = {descriptor.key: descriptor for descriptor in descriptors}
                 self._last_discovery = monotonic()
@@ -908,6 +913,28 @@ class RaritanClient:
                 asset_field="external_sensor_inventory",
                 attributes={"pdu_id": pdu_id, **(attributes or {})},
                 device_info=device_info or self.device_info,
+            )
+        )
+
+    def _collect_modbus_inventory(self, descriptors):
+        """Add a summary entity for the optional Xerus Modbus/TCP service."""
+        descriptors.append(
+            SensorDescriptor(
+                key=_slug(f"{self.host}_xerus_modbus_tcp_layout"),
+                name="Xerus Modbus TCP Layout",
+                context="Xerus Modbus TCP",
+                target="modbus://basic-pdu-parameters",
+                kind=SensorKind.INVENTORY,
+                field="xerus_modbus_layout",
+                type_name="INVENTORY",
+                asset_field="xerus_modbus_layout",
+                attributes={
+                    "ldcs_protocol": "modbus_tcp",
+                    "modbus_register_block": "basic_pdu_parameters",
+                    "modbus_start_address": "0000h",
+                    "modbus_register_count": 5,
+                },
+                device_info=self.device_info,
             )
         )
 
@@ -1573,6 +1600,10 @@ class RaritanClient:
                         "telemetry_source": "json_rpc",
                     },
                 }
+            elif descriptor.asset_field == "xerus_modbus_layout":
+                value = self.modbus.read_layout()
+                value.setdefault("attributes", {}).update(descriptor.attributes or {})
+                data[descriptor.key] = value
         return data
 
     def _waveform_value(self, waveform):

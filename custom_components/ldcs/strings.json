@@ -17,6 +17,8 @@
           "password": "Password",
           "verify_ssl": "Verify SSL certificate",
           "profile": "Discovery profile",
+          "modbus_port": "Modbus TCP port",
+          "modbus_slave_id": "Modbus slave ID",
           "scan_interval": "Scan interval",
           "rack_name": "Rack name",
           "rack_role": "Rack role",

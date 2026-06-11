@@ -68,6 +68,8 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 password=user_input[CONF_PASSWORD],
                 verify_ssl=user_input[CONF_VERIFY_SSL],
                 profile=user_input[CONF_PROFILE],
+                modbus_port=user_input[CONF_MODBUS_PORT],
+                modbus_slave_id=user_input[CONF_MODBUS_SLAVE_ID],
             )
             try:
                 metadata = await self.hass.async_add_executor_job(client.test_connection)
@@ -88,6 +90,12 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_PASSWORD): str,
                 vol.Required(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): bool,
                 vol.Required(CONF_PROFILE, default=DEFAULT_PROFILE): _profile_selector(),
+                vol.Optional(CONF_MODBUS_PORT, default=DEFAULT_MODBUS_PORT): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=65535)
+                ),
+                vol.Optional(CONF_MODBUS_SLAVE_ID, default=DEFAULT_MODBUS_SLAVE_ID): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=247)
+                ),
                 vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
                     vol.Coerce(int), vol.Range(min=5, max=3600)
                 ),

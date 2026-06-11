@@ -13,7 +13,12 @@
 - `password`: Xerus account password.
 - `verify_ssl`: enable only if the device has a certificate trusted by Home Assistant.
 - `profile`: discovery breadth.
+- `modbus_port`: optional Xerus Modbus TCP port, usually `502`.
+- `modbus_slave_id`: optional Xerus Modbus slave ID, usually `1`.
 - `scan_interval`: polling interval in seconds.
+
+For Xerus PDUs, Modbus/TCP is currently used for a read-only diagnostic layout
+sensor. JSON-RPC and Prometheus remain the primary discovery and telemetry path.
 
 ### USystems RDHx Cooling
 
@@ -67,3 +72,14 @@ The integration prefers matching Prometheus feed values when available because t
 ## Redfish
 
 Redfish is used for outlet power switches where the device advertises compatible `PowerEquipment` outlet controls.
+
+## Modbus/TCP
+
+LDCS uses Modbus/TCP in two ways:
+
+- Xerus rack PDUs: optional read-only layout diagnostics for BMS compatibility
+  and future fallback/control work.
+- USystems RDHx cooling: native telemetry through the RDHx Modbus profile.
+
+Xerus Modbus does not replace JSON-RPC, because JSON-RPC provides richer names,
+thresholds, alarms, asset/security data, min/max readings, and waveform capture.

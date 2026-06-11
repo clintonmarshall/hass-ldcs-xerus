@@ -16,6 +16,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     CONF_CREATE_DASHBOARD,
+    CONF_MODBUS_PORT,
+    CONF_MODBUS_SLAVE_ID,
     CONF_PROFILE,
     CONF_PRODUCT_TYPE,
     CONF_RACK_NAME,
@@ -23,6 +25,8 @@ from .const import (
     CONF_RACK_ROLE,
     CONF_VERIFY_SSL,
     DEFAULT_PROFILE,
+    DEFAULT_MODBUS_PORT,
+    DEFAULT_MODBUS_SLAVE_ID,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MQTT_REFRESH_DEBOUNCE,
@@ -74,6 +78,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         verify_ssl=entry.data.get(CONF_VERIFY_SSL, False),
         profile=entry.options.get(CONF_PROFILE, entry.data.get(CONF_PROFILE, DEFAULT_PROFILE)),
         device_identifier=entry.unique_id,
+        modbus_port=entry.data.get(CONF_MODBUS_PORT, DEFAULT_MODBUS_PORT),
+        modbus_slave_id=entry.data.get(CONF_MODBUS_SLAVE_ID, DEFAULT_MODBUS_SLAVE_ID),
     )
 
     async def _async_update_data():

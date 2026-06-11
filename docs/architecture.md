@@ -92,6 +92,12 @@ Retain the current hybrid approach:
 - Prometheus for efficient metric polling
 - MQTT push as a refresh signal
 - Redfish for outlet switching
+- Modbus/TCP for read-only layout diagnostics initially, then optional BMS-style
+  fallback/control surfaces once the normalized model is stable
+
+Avoid duplicating every Xerus value through Modbus. Prefer JSON-RPC for rich
+metadata and Prometheus for polling, then use Modbus where a standardized
+register/coil view adds operational value.
 
 ### USystems RDHx
 
