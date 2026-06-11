@@ -598,11 +598,19 @@ def _outlet_sections(
         _section(
             [
                 _heading("Outlet Trends", "mdi:chart-line"),
-                _history("Outlet power history", outlet_power_entities[:10]),
-                _entities_card(
-                    "Outlet telemetry drill-down",
-                    (outlet_power_entities + outlet_current_entities + outlet_state_entities)[:24],
+                _sensor_history_expander(
+                    "Outlet power trends",
+                    "mdi:chart-line",
+                    outlet_power_entities[:12],
+                    frontend_features,
                 ),
+                _sensor_history_expander(
+                    "Outlet current trends",
+                    "mdi:current-ac",
+                    outlet_current_entities[:12],
+                    frontend_features,
+                ),
+                _entities_card("Outlet states", outlet_state_entities[:12]),
             ],
             2,
         )
@@ -630,7 +638,14 @@ def _entities_card(title: str, entity_ids: list[str]) -> dict | None:
 def _history(title: str, entity_ids: list[str]) -> dict | None:
     if not entity_ids:
         return _entities_card(title, [])
-    return {"type": "history-graph", "title": title, "hours_to_show": 24, "entities": entity_ids}
+    return {
+        "type": "history-graph",
+        "title": title,
+        "hours_to_show": 24,
+        "entities": [
+            {"entity": entity_id, "name": _history_name(entity_id)} for entity_id in entity_ids
+        ],
+    }
 
 
 def _gauge_cards(
@@ -673,7 +688,6 @@ def _power_gauge(
                 {"from": red, "color": "var(--error-color)"},
             ],
             "titles": {"primary": name},
-            "value_texts": {"primary": "{{ state }}"},
         }
     return {
         "type": "gauge",
@@ -782,11 +796,6 @@ def _outlet_control_cards(
         primary_entity = switch_entity or state_entity or power_entity or current_entity
         if primary_entity is None:
             continue
-        detail_entities = [
-            entity_id
-            for entity_id in outlet_entities
-            if _outlet_number(entity_id) == number
-        ]
         title_card = _outlet_title_card(
             number,
             primary_entity,
@@ -798,8 +807,7 @@ def _outlet_control_cards(
             _history(
                 f"Outlet {number} history",
                 [entity_id for entity_id in (power_entity, current_entity) if entity_id],
-            ),
-            _entities_card(f"Outlet {number} values", detail_entities[:16]),
+            )
         ]
         cards.append(
             _expander_card(
@@ -836,7 +844,7 @@ def _outlet_title_card(
         return {
             "type": "custom:bubble-card",
             "card_type": "button",
-            "button_type": "switch" if primary_entity.startswith("switch.") else "state",
+            "button_type": "state",
             "entity": primary_entity,
             "name": f"Outlet {number}",
             "icon": "mdi:power-socket-au",
@@ -864,10 +872,7 @@ def _sensor_history_expander(
     return _expander_card(
         title=title,
         title_card=title_card,
-        cards=[
-            _history(f"{title} history", entity_ids[:8]),
-            _entities_card(title, entity_ids[:18]),
-        ],
+        cards=[_history(f"{title} history", entity_ids[:8])],
         frontend_features=frontend_features,
     )
 
@@ -888,7 +893,6 @@ def _expander_card(
             "title": title,
             "title-card": title_card,
             "title-card-clickable": True,
-            "title-card-button-overlay": True,
             "child-margin-top": "0.6em",
             "padding": 0,
             "clear": True,
@@ -903,6 +907,58 @@ def _outlet_number(entity_id: str) -> int | None:
     if match is None:
         return None
     return int(match.group(1))
+
+
+def _history_name(entity_id: str) -> str:
+    lowered = entity_id.lower()
+    outlet_number = _outlet_number(lowered)
+    if outlet_number is not None:
+        if "active_power" in lowered:
+            return f"Outlet {outlet_number} W"
+        if "current" in lowered:
+            return f"Outlet {outlet_number} A"
+        if "voltage" in lowered:
+            return f"Outlet {outlet_number} V"
+        return f"Outlet {outlet_number}"
+    inlet_match = re.search(r"inlet[_-](\d+)", lowered)
+    if inlet_match:
+        inlet_number = int(inlet_match.group(1))
+        if "active_power" in lowered:
+            return f"Inlet {inlet_number} W"
+        if "current" in lowered:
+            return f"Inlet {inlet_number} A"
+        if "voltage" in lowered:
+            return f"Inlet {inlet_number} V"
+        if "frequency" in lowered:
+            return f"Inlet {inlet_number} Hz"
+        return f"Inlet {inlet_number}"
+    if "temperature" in lowered:
+        return _short_sensor_name(entity_id, "Temperature")
+    if "humidity" in lowered:
+        return _short_sensor_name(entity_id, "Humidity")
+    return _short_sensor_name(entity_id, entity_id.split(".", 1)[-1])
+
+
+def _short_sensor_name(entity_id: str, fallback: str) -> str:
+    object_id = entity_id.split(".", 1)[-1]
+    parts = [
+        part
+        for part in object_id.split("_")
+        if part
+        and part
+        not in {
+            "lab",
+            "ldcs",
+            "legrand",
+            "my",
+            "pdu",
+            "raritan",
+            "xerus",
+        }
+    ]
+    if not parts:
+        return fallback
+    return " ".join(part.upper() if len(part) <= 2 else part.title() for part in parts[:4])
 
 
 def _matching(entities: list[str], *needles: str) -> list[str]:
