@@ -488,11 +488,14 @@ class RaritanClient:
                 raise RaritanError(f"Unable to connect to Xerus device {self.host}: {err}") from err
             return self._metadata
 
-    def discover(self):
+    def discover(self, phase: str = "full"):
         """Discover sensors exposed by the PDU."""
         with self._lock:
             self.connect()
             try:
+                fast_phase = phase == "fast"
+                started = monotonic()
+                _LOGGER.info("LDCS %s discovery started for %s", phase, self.host)
                 self._metadata = self._read_pdu_metadata(self.pdu)
                 descriptors = []
                 self._sensors_by_key = {}
@@ -507,8 +510,16 @@ class RaritanClient:
                 self._ocp_details = {}
                 self._poles_by_target = {}
                 self._link_statuses = self._link_unit_statuses()
-                self._collect_pdu(descriptors, self.pdu, 0, self.device_info)
-                for link_id, link_pdu, link_metadata, link_status in self._linked_pdus():
+                self._collect_pdu(
+                    descriptors,
+                    self.pdu,
+                    0,
+                    self.device_info,
+                    include_heavy=not fast_phase,
+                )
+                for link_id, link_pdu, link_metadata, link_status in self._linked_pdus(
+                    probe_missing=not fast_phase
+                ):
                     self._collect_pdu(
                         descriptors,
                         link_pdu,
@@ -519,17 +530,26 @@ class RaritanClient:
                             "pdu_link_role": "link_unit",
                             "pdu_link_status": link_status,
                         },
+                        include_heavy=not fast_phase,
                     )
-                self._collect_outlet_groups(descriptors)
-                self._collect_asset_logger(descriptors)
                 self._collect_alarm_summary(descriptors)
-                self._collect_security_summary(descriptors)
                 self._collect_service_status(descriptors)
-                self._collect_config_snapshot(descriptors)
-                self._collect_modbus_inventory(descriptors)
+                if not fast_phase:
+                    self._collect_outlet_groups(descriptors)
+                    self._collect_asset_logger(descriptors)
+                    self._collect_security_summary(descriptors)
+                    self._collect_config_snapshot(descriptors)
+                    self._collect_modbus_inventory(descriptors)
                 self.sensor_descriptors = descriptors
                 self._descriptors_by_key = {descriptor.key: descriptor for descriptor in descriptors}
                 self._last_discovery = monotonic()
+                _LOGGER.info(
+                    "LDCS %s discovery finished for %s with %s descriptors in %.1fs",
+                    phase,
+                    self.host,
+                    len(descriptors),
+                    self._last_discovery - started,
+                )
             except Exception as err:  # noqa: BLE001
                 raise RaritanError(f"Unable to discover sensors on {self.host}: {err}") from err
 
@@ -894,9 +914,11 @@ class RaritanClient:
             "mac_address": metadata.macAddress,
         }
 
-    def _linked_pdus(self):
+    def _linked_pdus(self, probe_missing: bool = True):
         """Yield linked PDU proxies exposed by the primary unit."""
         statuses = self._link_statuses or self._link_unit_statuses()
+        if not statuses and not probe_missing:
+            return
         link_ids = sorted(statuses) if statuses else range(2, 9)
         for link_id in link_ids:
             link_pdu = pdumodel.Pdu(f"/model/pdu/{link_id}", self.agent)
@@ -934,7 +956,7 @@ class RaritanClient:
         self._link_statuses = result
         return result
 
-    def _collect_pdu(self, descriptors, pdu, pdu_id, device_info, attributes=None):
+    def _collect_pdu(self, descriptors, pdu, pdu_id, device_info, attributes=None, include_heavy=True):
         """Collect sensors from one PDU in a primary/link chain."""
         pdu_attributes = {
             "pdu_id": pdu_id,
@@ -963,9 +985,10 @@ class RaritanClient:
                 device_info,
                 pdu_attributes,
             )
-        self._collect_peripherals(descriptors, pdu, pdu_id, device_info, pdu_attributes)
-        self._collect_external_sensor_inventory(descriptors, pdu_id, device_info, pdu_attributes)
-        self._collect_asset_inventory(descriptors, pdu_id, device_info, pdu_attributes)
+        if include_heavy:
+            self._collect_peripherals(descriptors, pdu, pdu_id, device_info, pdu_attributes)
+            self._collect_external_sensor_inventory(descriptors, pdu_id, device_info, pdu_attributes)
+            self._collect_asset_inventory(descriptors, pdu_id, device_info, pdu_attributes)
 
     def _collect_outlet_groups(self, descriptors):
         """Collect sensors for Xerus outlet groups."""

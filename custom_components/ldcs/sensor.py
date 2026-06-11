@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import (
     UnitOfElectricCurrent,
@@ -19,6 +22,7 @@ from .device_tree import async_register_xerus_device_tree
 from .raritan_client import SensorKind
 from .usystems_rdhx import RDHX_SENSORS
 
+_LOGGER = logging.getLogger(__name__)
 
 UNIT_MAP = {
     "AMPERE": UnitOfElectricCurrent.AMPERE,
@@ -72,15 +76,34 @@ async def async_setup_entry(hass, entry, async_add_entities):
         return
 
     async def _async_discover_and_add():
+        await asyncio.sleep(10)
         if not client.sensor_descriptors:
-            await hass.async_add_executor_job(client.discover)
+            await hass.async_add_executor_job(client.discover, "fast")
         async_register_xerus_device_tree(hass, entry, client)
+        known_keys = {descriptor.key for descriptor in client.sensor_descriptors}
         entities = [
             RaritanSensor(coordinator, client, entry.entry_id, descriptor)
             for descriptor in client.sensor_descriptors
         ]
         async_add_entities(entities)
+        _LOGGER.info("LDCS added %s fast-discovery sensor entities for %s", len(entities), entry.title)
+        await asyncio.sleep(10)
         await coordinator.async_request_refresh()
+        await asyncio.sleep(60)
+        await hass.async_add_executor_job(client.discover, "full")
+        async_register_xerus_device_tree(hass, entry, client)
+        new_descriptors = [
+            descriptor
+            for descriptor in client.sensor_descriptors
+            if descriptor.key not in known_keys
+        ]
+        if new_descriptors:
+            async_add_entities(
+                RaritanSensor(coordinator, client, entry.entry_id, descriptor)
+                for descriptor in new_descriptors
+            )
+            _LOGGER.info("LDCS added %s full-discovery sensor entities for %s", len(new_descriptors), entry.title)
+            await coordinator.async_request_refresh()
 
     entry.async_create_background_task(
         hass,
