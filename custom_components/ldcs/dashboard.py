@@ -18,8 +18,8 @@ DASHBOARD_STORAGE_VERSION = 1
 DASHBOARD_STORAGE_MINOR_VERSION = 1
 DASHBOARDS_STORAGE_KEY = "lovelace_dashboards"
 RESOURCES_STORAGE_KEY = "lovelace_resources"
-RESOURCE_URL_PREFIX = "/ldcs_static"
-LDCS_FRONTEND_VERSION = "0.6.59"
+RESOURCE_URL_PREFIX = "/local/ldcs"
+LDCS_FRONTEND_VERSION = "0.6.61"
 USE_OPTIONAL_HACS_CARDS = False
 HISTORY_HOURS_TO_SHOW = 8
 LDCS_RESOURCES = (
@@ -319,6 +319,29 @@ def _build_dashboard_config(
         "reset_sensor_minimum_maximum_values",
     )
     config_snapshot_entities = _matching(entities, "pdu_config_snapshot")
+    waveform_entities = waveform_buttons + _matching(power_entities, "waveform")
+    has_waveform = bool(waveform_entities)
+    has_power = bool(active_power_entities or inlet_current_entities or inlet_voltage_entities or has_waveform)
+    has_outlets = bool(outlet_entities)
+    has_environment = bool(environment_entities)
+    has_security_assets = bool(security_entities or asset_entities)
+    has_events = bool(event_entities or contact_control_entities)
+    has_cooling_visual = bool(
+        _matching(environment_entities, "cooling", "rdhx", "fan", "valve", "air_off", "air_on")
+    )
+    quick_links = []
+    if has_power:
+        quick_links.append(_navigation_card("Power", "mdi:flash", "/ldcs-" + _slug(rack_name) + "/power", frontend_features))
+    if has_waveform:
+        quick_links.append(_navigation_card("Power quality", "mdi:sine-wave", "/ldcs-" + _slug(rack_name) + "/power", frontend_features))
+    if has_outlets:
+        quick_links.append(_navigation_card("Outlets", "mdi:power-socket-au", "/ldcs-" + _slug(rack_name) + "/outlets", frontend_features))
+    if has_security_assets:
+        quick_links.append(_navigation_card("Security & assets", "mdi:shield-lock", "/ldcs-" + _slug(rack_name) + "/security-assets", frontend_features))
+    if has_environment:
+        quick_links.append(_navigation_card("Environment", "mdi:thermometer-water", "/ldcs-" + _slug(rack_name) + "/environment", frontend_features))
+    if has_events:
+        quick_links.append(_navigation_card("Events & contacts", "mdi:electric-switch", "/ldcs-" + _slug(rack_name) + "/events", frontend_features))
 
     visual = {
         "type": "custom:raritan-rack-visual-card",
@@ -399,7 +422,7 @@ def _build_dashboard_config(
 
     return {
         "title": rack_name,
-        "views": [
+        "views": _compact([
             {
                 "title": "Rack Overview",
                 "path": "overview",
@@ -426,10 +449,7 @@ def _build_dashboard_config(
                     _section(
                         [
                             _heading("Quick Drill-Down", "mdi:view-dashboard"),
-                            _navigation_card("Power quality", "mdi:sine-wave", "/ldcs-" + _slug(rack_name) + "/power", frontend_features),
-                            _navigation_card("Outlets", "mdi:power-socket-au", "/ldcs-" + _slug(rack_name) + "/outlets", frontend_features),
-                            _navigation_card("Security & assets", "mdi:shield-lock", "/ldcs-" + _slug(rack_name) + "/security-assets", frontend_features),
-                            _navigation_card("Events & contacts", "mdi:electric-switch", "/ldcs-" + _slug(rack_name) + "/events", frontend_features),
+                            *quick_links,
                         ]
                     ),
                 ],
@@ -508,12 +528,12 @@ def _build_dashboard_config(
                     _section(
                         [
                             _heading("Power Quality", "mdi:sine-wave"),
-                            _entities_card("Power quality waveform", waveform_buttons + _matching(power_entities, "waveform")[:8]),
+                            _entities_card("Power quality waveform", waveform_entities[:12]),
                         ],
                         2,
-                    ),
+                    ) if has_waveform else None,
                 ],
-            },
+            } if has_power else None,
             {
                 "title": "Outlets",
                 "path": "outlets",
@@ -521,7 +541,7 @@ def _build_dashboard_config(
                 "type": "sections",
                 "max_columns": 4,
                 "sections": _outlet_sections(outlet_entities, frontend_features, _slug(rack_name)),
-            },
+            } if has_outlets else None,
             {
                 "title": "Outlet History",
                 "path": "outlet-history",
@@ -529,7 +549,7 @@ def _build_dashboard_config(
                 "type": "sections",
                 "max_columns": 4,
                 "sections": _outlet_history_sections(outlet_entities),
-            },
+            } if has_outlets else None,
             {
                 "title": "Environment",
                 "path": "environment",
@@ -537,7 +557,7 @@ def _build_dashboard_config(
                 "type": "sections",
                 "max_columns": 4,
                 "sections": [
-                    _section([_heading("Cooling Visual", "mdi:fan"), cooling_visual], 2),
+                    _section([_heading("Cooling Visual", "mdi:fan"), cooling_visual], 2) if has_cooling_visual else None,
                     _section(
                         [
                             _heading("Temperature", "mdi:thermometer"),
@@ -566,7 +586,7 @@ def _build_dashboard_config(
                         2,
                     ),
                 ],
-            },
+            } if has_environment else None,
             {
                 "title": "Security & Assets",
                 "path": "security-assets",
@@ -593,7 +613,7 @@ def _build_dashboard_config(
                         2,
                     ),
                 ],
-            },
+            } if has_security_assets else None,
             {
                 "title": "Events",
                 "path": "events",
@@ -625,14 +645,13 @@ def _build_dashboard_config(
                             _heading("Power Quality", "mdi:sine-wave"),
                             _entities_card(
                                 "Waveform capture",
-                                waveform_buttons
-                                + _matching(power_entities, "waveform")[:12],
+                                waveform_entities[:12],
                             ),
                         ],
                         2,
-                    ),
+                    ) if has_waveform else None,
                 ],
-            },
+            } if has_events else None,
             {
                 "title": "PDU Config",
                 "path": "pdu-config",
@@ -670,7 +689,7 @@ def _build_dashboard_config(
                     ),
                 ],
             },
-        ],
+        ]),
     }
 
 
@@ -953,6 +972,11 @@ def _heading(text: str, icon: str) -> dict:
 
 def _section(cards: list[dict | None], column_span: int = 1) -> dict:
     return {"type": "grid", "column_span": column_span, "cards": [card for card in cards if card]}
+
+
+def _compact(items: list[dict | None]) -> list[dict]:
+    """Return a list without omitted dashboard items."""
+    return [item for item in items if item]
 
 
 def _entities_card(title: str, entity_ids: list[str]) -> dict | None:

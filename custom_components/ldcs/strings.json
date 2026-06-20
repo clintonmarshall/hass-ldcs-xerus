@@ -28,7 +28,7 @@
       },
       "xerus_mqtt": {
         "title": "Optional Xerus MQTT Data Push",
-        "description": "This enables event-driven refreshes. JSON-RPC still remains the authoritative source for sensors and configuration.",
+        "description": "Optionally configure MQTT Data Push on the target Xerus device during setup. This gives Home Assistant event-driven refresh triggers; JSON-RPC still remains the authoritative source for sensors and configuration.",
         "data": {
           "xerus_mqtt_datapush": "Manage Xerus MQTT Data Push",
           "xerus_mqtt_host": "MQTT broker host",
@@ -63,7 +63,8 @@
       }
     },
     "error": {
-      "cannot_connect": "Unable to connect to the Xerus device"
+      "cannot_connect": "Unable to connect to the Xerus device",
+      "mqtt_host_required": "Enter an MQTT broker host when managing Xerus MQTT Data Push"
     },
     "abort": {
       "already_configured": "This Xerus device is already configured"

@@ -6,6 +6,7 @@ from datetime import timedelta
 import json
 import logging
 from pathlib import Path
+import shutil
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components import mqtt
@@ -63,8 +64,15 @@ except ImportError:
 
 _LOGGER = logging.getLogger(__name__)
 MQTT_FLEET_TOPIC = "raritan/#"
-STATIC_URL_PATH = "/ldcs_static"
+STATIC_URL_PATH = "/local/ldcs"
 STATIC_PATH = Path(__file__).parent / "www"
+WWW_STATIC_PATH = Path("/config/www/ldcs")
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up shared LDCS resources."""
+    await _async_register_frontend_assets(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -251,23 +259,19 @@ async def _async_register_frontend_assets(hass: HomeAssistant) -> None:
     registered_key = f"{DOMAIN}_static_registered"
     if hass.data.get(registered_key):
         return
-    if StaticPathConfig is None:
-        _LOGGER.debug("Unable to register LDCS frontend assets: StaticPathConfig unavailable")
+    if not STATIC_PATH.exists():
+        _LOGGER.warning("Unable to register LDCS frontend assets: %s is missing", STATIC_PATH)
         return
-    configs = [StaticPathConfig(STATIC_URL_PATH, str(STATIC_PATH), True)]
-    if async_register_static_paths is not None and StaticPathConfig is not None:
-        await async_register_static_paths(hass, configs)
-    elif hasattr(hass.http, "async_register_static_paths"):
-        await hass.http.async_register_static_paths(configs)
-    elif hasattr(hass.http, "async_register_static_path"):
-        hass.http.async_register_static_path(
-            STATIC_URL_PATH,
-            str(STATIC_PATH),
-            cache_headers=True,
-        )
-    else:
-        _LOGGER.debug("Unable to register LDCS frontend assets: no compatible HTTP helper")
+    try:
+        WWW_STATIC_PATH.mkdir(parents=True, exist_ok=True)
+        for source in STATIC_PATH.glob("*.js"):
+            target = WWW_STATIC_PATH / source.name
+            if not target.exists() or source.stat().st_mtime_ns != target.stat().st_mtime_ns:
+                shutil.copy2(source, target)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Unable to copy LDCS frontend assets from %s to %s: %s", STATIC_PATH, WWW_STATIC_PATH, err)
         return
+    _LOGGER.info("Installed LDCS frontend assets at %s from %s", WWW_STATIC_PATH, STATIC_PATH)
     hass.data[registered_key] = True
 
 

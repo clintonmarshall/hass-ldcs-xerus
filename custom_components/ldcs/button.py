@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_XERUS_CAPABILITIES, DOMAIN
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -15,10 +15,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = runtime["coordinator"]
 
     entities = [RaritanResetExtremaButton(coordinator, client, entry.entry_id)]
-    entities.extend(
-        RaritanWaveformCaptureButton(coordinator, client, entry.entry_id, line_name)
-        for line_name in (None, "L1", "L2", "L3")
-    )
+    capabilities = entry.data.get(CONF_XERUS_CAPABILITIES) or {}
+    if capabilities.get("waveform") or capabilities.get("power_quality"):
+        entities.extend(
+            RaritanWaveformCaptureButton(coordinator, client, entry.entry_id, line_name)
+            for line_name in (None, "L1", "L2", "L3")
+        )
     async_add_entities(entities)
 
 

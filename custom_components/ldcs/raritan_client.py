@@ -542,6 +542,10 @@ class RaritanClient:
                     self._collect_modbus_inventory(descriptors)
                 self.sensor_descriptors = descriptors
                 self._descriptors_by_key = {descriptor.key: descriptor for descriptor in descriptors}
+                self._metadata["capabilities"] = _merge_capabilities(
+                    self._metadata.get("capabilities", {}),
+                    _capabilities_from_descriptors(descriptors),
+                )
                 self._last_discovery = monotonic()
                 _LOGGER.info(
                     "LDCS %s discovery finished for %s with %s descriptors in %.1fs",
@@ -905,7 +909,7 @@ class RaritanClient:
             configured_name = getattr(settings, "name", "")
         except Exception:  # noqa: BLE001
             configured_name = ""
-        return {
+        result = {
             "name": configured_name,
             "manufacturer": nameplate.manufacturer,
             "model": nameplate.model,
@@ -913,6 +917,8 @@ class RaritanClient:
             "fw_revision": metadata.fwRevision,
             "mac_address": metadata.macAddress,
         }
+        result.update(infer_xerus_model_capabilities(result))
+        return result
 
     def _linked_pdus(self, probe_missing: bool = True):
         """Yield linked PDU proxies exposed by the primary unit."""
@@ -2943,6 +2949,86 @@ def _local_security_status(states):
     if values:
         return "normal"
     return None
+
+
+def infer_xerus_model_capabilities(metadata: dict | None) -> dict:
+    """Return a coarse Xerus family and capabilities from model metadata."""
+    model = str((metadata or {}).get("model") or "").upper()
+    family = "xerus"
+    if model.startswith("SRC") or " SENSOR" in f" {model}" or "SENSOR" in model and "PDU" not in model:
+        family = "src"
+    elif "PX4" in model or "PRO4X" in model:
+        family = "px4"
+    elif "PX3" in model or "PX2" in model:
+        family = "px3"
+
+    capabilities = {
+        "power": family not in {"src"},
+        "outlets": family not in {"src"},
+        "ocp": family in {"px3", "px4", "xerus"},
+        "power_quality": family == "px4",
+        "waveform": family == "px4",
+        "external_sensors": True,
+        "asset_strip": family in {"src", "px3", "px4", "xerus"},
+        "security": family in {"src", "px3", "px4", "xerus"},
+        "modbus": True,
+        "redfish": family in {"px3", "px4", "xerus"},
+        "prometheus": True,
+        "mqtt_datapush": True,
+    }
+    return {"device_family": family, "capabilities": capabilities}
+
+
+def _capabilities_from_descriptors(descriptors: list[SensorDescriptor]) -> dict:
+    """Infer capabilities from endpoints actually discovered on the device."""
+    contexts = {descriptor.context.lower() for descriptor in descriptors}
+    kinds = {descriptor.kind for descriptor in descriptors}
+    type_names = {str(descriptor.type_name or "").upper() for descriptor in descriptors}
+    targets = {descriptor.target.lower() for descriptor in descriptors}
+    return {
+        "power": any(
+            type_name in {"VOLTAGE", "CURRENT", "POWER", "POWER_FACTOR", "ENERGY", "FREQUENCY"}
+            for type_name in type_names
+        ),
+        "outlets": any("outlet" in context for context in contexts)
+        or any("/outlet" in target for target in targets),
+        "ocp": any("ocp" in context for context in contexts)
+        or any("overcurrent" in target for target in targets),
+        "power_quality": SensorKind.WAVEFORM in kinds or "POWER_QUALITY" in type_names,
+        "waveform": SensorKind.WAVEFORM in kinds,
+        "external_sensors": any(
+            type_name
+            in {
+                "TEMPERATURE",
+                "HUMIDITY",
+                "AIR_FLOW",
+                "AIR_PRESSURE",
+                "CONTACT_CLOSURE",
+                "DRY_CONTACT",
+                "POWERED_DRY_CONTACT",
+                "DOOR_STATE",
+                "DOOR_LOCK_STATE",
+                "DOOR_HANDLE_LOCK",
+                "WATER_LEAK",
+                "SMOKE_DETECTOR",
+            }
+            for type_name in type_names
+        ),
+        "asset_strip": any(kind in {SensorKind.ASSET_LOG, SensorKind.ASSET_INVENTORY} for kind in kinds),
+        "security": SensorKind.SECURITY in kinds
+        or any(type_name in {"DOOR_STATE", "DOOR_LOCK_STATE", "DOOR_HANDLE_LOCK"} for type_name in type_names),
+    }
+
+
+def _merge_capabilities(*capability_sets: dict | None) -> dict:
+    """Merge capability maps, preserving any positive discovery result."""
+    merged = {}
+    for capabilities in capability_sets:
+        if not isinstance(capabilities, dict):
+            continue
+        for key, value in capabilities.items():
+            merged[key] = bool(value) or bool(merged.get(key))
+    return merged
 
 
 def _door_access_rules_attrs(rules):

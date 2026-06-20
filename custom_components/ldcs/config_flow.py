@@ -26,6 +26,8 @@ from .const import (
     CONF_XERUS_MQTT_TLS,
     CONF_XERUS_MQTT_TOPIC_PREFIX,
     CONF_XERUS_MQTT_USERNAME,
+    CONF_XERUS_CAPABILITIES,
+    CONF_XERUS_DEVICE_FAMILY,
     CONF_XERUS_TOPOLOGY,
     DEFAULT_CREATE_DASHBOARD,
     DEFAULT_MODBUS_PORT,
@@ -44,7 +46,7 @@ from .const import (
     PRODUCT_USYSTEMS_RDHX,
     PRODUCT_XERUS_PDU,
 )
-from .raritan_client import RaritanClient, RaritanError
+from .raritan_client import RaritanClient, RaritanError, infer_xerus_model_capabilities
 
 
 class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -128,16 +130,24 @@ class LdcsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_xerus_pdu()
 
         if user_input is not None:
+            errors = _validate_xerus_mqtt(user_input)
+            if errors:
+                schema = vol.Schema(_xerus_mqtt_fields(base_input))
+                return self.async_show_form(step_id="xerus_mqtt", data_schema=schema, errors=errors)
+
             merged = {**base_input, **user_input}
             serial = metadata.get("serial_number") or merged[CONF_HOST]
             await self.async_set_unique_id(serial)
             self._abort_if_unique_id_configured()
             title = merged.get(CONF_RACK_NAME) or metadata.get("name") or metadata.get("model") or merged[CONF_HOST]
+            detected = infer_xerus_model_capabilities(metadata)
             merged[CONF_PRODUCT_TYPE] = PRODUCT_XERUS_PDU
             merged[CONF_RACK_ROLE] = merged.get(CONF_XERUS_TOPOLOGY, DEFAULT_XERUS_TOPOLOGY)
+            merged[CONF_XERUS_DEVICE_FAMILY] = detected["device_family"]
+            merged[CONF_XERUS_CAPABILITIES] = detected["capabilities"]
             return self.async_create_entry(title=title, data=merged)
 
-        schema = vol.Schema(_xerus_mqtt_fields())
+        schema = vol.Schema(_xerus_mqtt_fields(base_input))
         return self.async_show_form(step_id="xerus_mqtt", data_schema=schema)
 
     async def async_step_usystems_rdhx(self, user_input=None):
@@ -347,7 +357,7 @@ def _profile_selector() -> selector.SelectSelector:
     )
 
 
-def _xerus_mqtt_fields() -> dict:
+def _xerus_mqtt_fields(base_input: dict | None = None) -> dict:
     """Return the optional Xerus MQTT Data Push setup fields."""
     return {
         vol.Optional(CONF_XERUS_MQTT_DATAPUSH, default=DEFAULT_XERUS_MQTT_DATAPUSH): bool,
@@ -358,8 +368,36 @@ def _xerus_mqtt_fields() -> dict:
         vol.Optional(CONF_XERUS_MQTT_TLS, default=DEFAULT_XERUS_MQTT_TLS): bool,
         vol.Optional(CONF_XERUS_MQTT_USERNAME, default=""): str,
         vol.Optional(CONF_XERUS_MQTT_PASSWORD, default=""): str,
-        vol.Optional(CONF_XERUS_MQTT_TOPIC_PREFIX, default=""): str,
+        vol.Optional(
+            CONF_XERUS_MQTT_TOPIC_PREFIX,
+            default=_default_xerus_mqtt_topic_prefix(base_input),
+        ): str,
     }
+
+
+def _validate_xerus_mqtt(user_input: dict) -> dict[str, str]:
+    """Validate optional Xerus MQTT Data Push settings."""
+    if not user_input.get(CONF_XERUS_MQTT_DATAPUSH):
+        return {}
+    if not str(user_input.get(CONF_XERUS_MQTT_HOST, "")).strip():
+        return {CONF_XERUS_MQTT_HOST: "mqtt_host_required"}
+    return {}
+
+
+def _default_xerus_mqtt_topic_prefix(base_input: dict | None) -> str:
+    """Return a predictable topic prefix for the setup flow."""
+    if not base_input:
+        return ""
+    rack = _slug(base_input.get(CONF_RACK_NAME) or DEFAULT_RACK_NAME)
+    host = _slug(base_input.get(CONF_HOST) or "xerus")
+    return f"ldcs/xerus/{rack}/{host}"
+
+
+def _slug(value: object) -> str:
+    """Return a simple MQTT-topic-safe slug."""
+    text = str(value or "").strip().lower()
+    cleaned = [char if char.isalnum() else "-" for char in text]
+    return "-".join("".join(cleaned).split("-")) or "device"
 
 
 def _rack_role_selector() -> selector.SelectSelector:
